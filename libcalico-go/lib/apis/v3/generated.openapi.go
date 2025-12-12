@@ -2082,13 +2082,31 @@ func schema_libcalico_go_lib_apis_v3_AllocationAttribute(ref common.ReferenceCal
 				Properties: map[string]spec.Schema{
 					"handle_id": {
 						SchemaProps: spec.SchemaProps{
-							Type:   []string{"string"},
-							Format: "",
+							Description: "HandleID is the primary identifier for the allocation.",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 					"secondary": {
 						SchemaProps: spec.SchemaProps{
-							Type: []string{"object"},
+							Description: "ActiveOwnerAttrs contains attributes of the active owner (the pod currently using the IP).",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"alternate": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AlternateOwnerAttrs contains attributes of the previous or potential owner (used during live migration to track the source or target pod).",
+							Type:        []string{"object"},
 							AdditionalProperties: &spec.SchemaOrBool{
 								Allows: true,
 								Schema: &spec.Schema{

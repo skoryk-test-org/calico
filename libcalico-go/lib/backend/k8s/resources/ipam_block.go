@@ -209,8 +209,9 @@ func IPAMBlockV3toV1(kvpv3 *model.KVPair) (*model.KVPair, error) {
 	attrs := []model.AllocationAttribute{}
 	for _, a := range ab.Spec.Attributes {
 		attrs = append(attrs, model.AllocationAttribute{
-			AttrPrimary:   a.AttrPrimary,
-			AttrSecondary: a.AttrSecondary,
+			HandleID:            a.HandleID,
+			ActiveOwnerAttrs:    a.ActiveOwnerAttrs,
+			AlternateOwnerAttrs: a.AlternateOwnerAttrs,
 		})
 	}
 
@@ -243,8 +244,9 @@ func IPAMBlockV1toV3(kvpv1 *model.KVPair) *model.KVPair {
 	attrs := []libapiv3.AllocationAttribute{}
 	for _, a := range ab.Attributes {
 		attrs = append(attrs, libapiv3.AllocationAttribute{
-			AttrPrimary:   a.AttrPrimary,
-			AttrSecondary: a.AttrSecondary,
+			HandleID:            a.HandleID,
+			ActiveOwnerAttrs:    a.ActiveOwnerAttrs,
+			AlternateOwnerAttrs: a.AlternateOwnerAttrs,
 		})
 	}
 
