@@ -146,7 +146,33 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("error constructing WorkloadEndpoint name: %s", err)
 	}
 
+	// Default handle ID based on container ID
 	handleID := utils.GetHandleID(conf.Name, args.ContainerID, epIDs.WEPName)
+
+	// Check if this is a KubeVirt virt-launcher pod and use VMI-based handle ID if so
+	var vmiInfo *utils.VMIInfo
+	if epIDs.Orchestrator == "k8s" && epIDs.Pod != "" && epIDs.Namespace != "" {
+		// Try to get pod info to check for virt-launcher label
+		k8sClient, err := k8s.NewK8sClient(conf, logrus.NewEntry(logrus.StandardLogger()))
+		if err == nil {
+			pod, err := k8sClient.CoreV1().Pods(epIDs.Namespace).Get(context.Background(), epIDs.Pod, metav1.GetOptions{})
+			if err == nil {
+				vmiInfo = utils.GetVMIInfo(pod)
+				if vmiInfo.IsVirtLauncherPod() && vmiInfo.HasVMIUID() {
+					// Use VMI-based handle ID for IP stability across pod recreations/migrations
+					handleID = fmt.Sprintf("%s.vmi.%s", conf.Name, vmiInfo.VMIUID)
+					logrus.WithFields(logrus.Fields{
+						"pod":             epIDs.Pod,
+						"namespace":       epIDs.Namespace,
+						"vmiName":         vmiInfo.VMIName,
+						"vmiUID":          vmiInfo.VMIUID,
+						"isMigrationTarget": vmiInfo.IsMigrationTarget(),
+						"handleID":        handleID,
+					}).Info("Detected KubeVirt virt-launcher pod, using VMI-based handle ID")
+				}
+			}
+		}
+	}
 
 	logger := logrus.WithFields(logrus.Fields{
 		"Workload":    epIDs.WEPName,
@@ -167,6 +193,15 @@ func cmdAdd(args *skel.CmdArgs) error {
 	if epIDs.Pod != "" {
 		attrs[ipam.AttributePod] = epIDs.Pod
 		attrs[ipam.AttributeNamespace] = epIDs.Namespace
+	}
+	// Add VMI attributes if this is a virt-launcher pod
+	if vmiInfo != nil && vmiInfo.IsVirtLauncherPod() {
+		if vmiInfo.VMIUID != "" {
+			attrs["vmi"] = vmiInfo.VMIUID
+		}
+		if vmiInfo.VMIName != "" {
+			attrs["vmi-name"] = vmiInfo.VMIName
+		}
 	}
 
 	r := &cniv1.Result{}
