@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2024 Tigera, Inc. All rights reserved.
+// Copyright (c) 2015-2026 Tigera, Inc. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -44,6 +44,7 @@ import (
 	client "github.com/projectcalico/calico/libcalico-go/lib/clientv3"
 	"github.com/projectcalico/calico/libcalico-go/lib/errors"
 	"github.com/projectcalico/calico/libcalico-go/lib/ipam"
+	"github.com/projectcalico/calico/libcalico-go/lib/kubevirt"
 	"github.com/projectcalico/calico/libcalico-go/lib/logutils"
 	cnet "github.com/projectcalico/calico/libcalico-go/lib/net"
 )
@@ -149,29 +150,22 @@ func cmdAdd(args *skel.CmdArgs) error {
 	// Default handle ID based on container ID
 	handleID := utils.GetHandleID(conf.Name, args.ContainerID, epIDs.WEPName)
 
-	// Check if this is a KubeVirt virt-launcher pod and use VMI-based handle ID if so
-	var vmiInfo *utils.VMIInfo
-	if epIDs.Orchestrator == "k8s" && epIDs.Pod != "" && epIDs.Namespace != "" {
-		// Try to get pod info to check for virt-launcher label
-		k8sClient, err := k8s.NewK8sClient(conf, logrus.NewEntry(logrus.StandardLogger()))
-		if err == nil {
-			pod, err := k8sClient.CoreV1().Pods(epIDs.Namespace).Get(context.Background(), epIDs.Pod, metav1.GetOptions{})
-			if err == nil {
-				vmiInfo = utils.GetVMIInfo(pod)
-				if vmiInfo.IsVirtLauncherPod() && vmiInfo.HasVMIUID() {
-					// Use VMI-based handle ID for IP stability across pod recreations/migrations
-					handleID = fmt.Sprintf("%s.vmi.%s", conf.Name, vmiInfo.VMIUID)
-					logrus.WithFields(logrus.Fields{
-						"pod":             epIDs.Pod,
-						"namespace":       epIDs.Namespace,
-						"vmiName":         vmiInfo.VMIName,
-						"vmiUID":          vmiInfo.VMIUID,
-						"isMigrationTarget": vmiInfo.IsMigrationTarget(),
-						"handleID":        handleID,
-					}).Info("Detected KubeVirt virt-launcher pod, using VMI-based handle ID")
-				}
-			}
-		}
+	// Check if this is a KubeVirt virt-launcher pod and use VMI-based handle ID if it is
+	vmiInfo, err := getVMIInfoForPod(conf, epIDs)
+	if err != nil {
+		return fmt.Errorf("failed to get VMI info: %w", err)
+	}
+	if vmiInfo != nil {
+		// Use VMI-based handle ID for IP stability across pod recreations/migrations
+		handleID = fmt.Sprintf("%s.vmi.%s", conf.Name, vmiInfo.VMIUID)
+		logrus.WithFields(logrus.Fields{
+			"pod":               epIDs.Pod,
+			"namespace":         epIDs.Namespace,
+			"vmiName":           vmiInfo.VMIName,
+			"vmiUID":            vmiInfo.VMIUID,
+			"isMigrationTarget": vmiInfo.IsMigrationTarget(),
+			"handleID":          handleID,
+		}).Info("Detected KubeVirt virt-launcher pod, using VMI-based handle ID")
 	}
 
 	logger := logrus.WithFields(logrus.Fields{
@@ -195,13 +189,10 @@ func cmdAdd(args *skel.CmdArgs) error {
 		attrs[ipam.AttributeNamespace] = epIDs.Namespace
 	}
 	// Add VMI attributes if this is a virt-launcher pod
-	if vmiInfo != nil && vmiInfo.IsVirtLauncherPod() {
-		if vmiInfo.VMIUID != "" {
-			attrs["vmi"] = vmiInfo.VMIUID
-		}
-		if vmiInfo.VMIName != "" {
-			attrs["vmi-name"] = vmiInfo.VMIName
-		}
+	if vmiInfo != nil {
+		// VMI UID and Name are guaranteed to be present (validated in GetVMIInfo)
+		attrs["vmi"] = vmiInfo.VMIUID
+		attrs["vmi-name"] = vmiInfo.VMIName
 	}
 
 	r := &cniv1.Result{}
@@ -494,6 +485,38 @@ func acquireIPAMLockBestEffort(path string) unlockFn {
 			logrus.Info("Released host-wide IPAM lock.")
 		}
 	}
+}
+
+// getVMIInfoForPod retrieves KubeVirt VirtualMachineInstance (VMI) information for a given pod.
+// Returns (vmiInfo, nil) if the pod is a valid virt-launcher pod.
+// Returns (nil, nil) if the pod is not a virt-launcher pod.
+// Returns (nil, error) if there was an error retrieving or validating VMI information.
+func getVMIInfoForPod(conf types.NetConf, epIDs *utils.WEPIdentifiers) (*kubevirt.VMIInfo, error) {
+	// Only check for VMI info in Kubernetes orchestrator
+	if epIDs.Orchestrator != "k8s" || epIDs.Pod == "" || epIDs.Namespace == "" {
+		return nil, nil
+	}
+
+	// Try to get pod info to check for virt-launcher label
+	k8sClient, err := k8s.NewK8sClient(conf, logrus.NewEntry(logrus.StandardLogger()))
+	if err != nil {
+		logrus.WithError(err).Debug("Failed to create Kubernetes client for VMI detection")
+		return nil, nil
+	}
+
+	pod, err := k8sClient.CoreV1().Pods(epIDs.Namespace).Get(context.Background(), epIDs.Pod, metav1.GetOptions{})
+	if err != nil {
+		logrus.WithError(err).Debug("Failed to get pod for VMI detection")
+		return nil, nil
+	}
+
+	vmiInfo, err := kubevirt.GetVMIInfo(pod)
+	if err != nil {
+		logrus.WithError(err).Error("Invalid virt-launcher pod configuration")
+		return nil, err
+	}
+
+	return vmiInfo, nil
 }
 
 func cmdDel(args *skel.CmdArgs) error {
