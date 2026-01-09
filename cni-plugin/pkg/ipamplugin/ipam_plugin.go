@@ -500,14 +500,14 @@ func getVMIInfoForPod(conf types.NetConf, epIDs *utils.WEPIdentifiers) (*kubevir
 	// Try to get pod info to check for virt-launcher label
 	k8sClient, err := k8s.NewK8sClient(conf, logrus.NewEntry(logrus.StandardLogger()))
 	if err != nil {
-		logrus.WithError(err).Debug("Failed to create Kubernetes client for VMI detection")
-		return nil, nil
+		logrus.WithError(err).Error("Failed to create Kubernetes client for VMI detection")
+		return nil, err
 	}
 
 	pod, err := k8sClient.CoreV1().Pods(epIDs.Namespace).Get(context.Background(), epIDs.Pod, metav1.GetOptions{})
 	if err != nil {
-		logrus.WithError(err).Debug("Failed to get pod for VMI detection")
-		return nil, nil
+		logrus.WithError(err).Error("Failed to get pod for VMI detection")
+		return nil, err
 	}
 
 	vmiInfo, err := kubevirt.GetVMIInfo(pod)
