@@ -54,13 +54,10 @@ const (
 
 // VMIInfo contains KubeVirt VMI-related information extracted from pod labels
 type VMIInfo struct {
-	// VMIName is the name of the VirtualMachineInstance (from vm.kubevirt.io/name)
-	VMIName string
-	// VMIUID is the UID of the VirtualMachineInstance (from kubevirt.io/created-by)
-	VMIUID string
-	// MigrationJobUID is the UID of the migration job (from kubevirt.io/migrationJobUID)
-	// This is only present on migration target pods
+	VMIName         string
+	VMIUID          string
 	MigrationJobUID string
+
 	// isVirtLauncher indicates if this pod is a virt-launcher pod
 	isVirtLauncher bool
 }
@@ -120,11 +117,6 @@ func (v *VMIInfo) IsMigrationTarget() bool {
 	return v.MigrationJobUID != ""
 }
 
-// HasVMIUID returns true if the VMI UID is available
-func (v *VMIInfo) HasVMIUID() bool {
-	return v.VMIUID != ""
-}
-
 // GetVMIName returns the VMI name
 func (v *VMIInfo) GetVMIName() string {
 	return v.VMIName
@@ -133,4 +125,10 @@ func (v *VMIInfo) GetVMIName() string {
 // GetVMIUID returns the VMI UID
 func (v *VMIInfo) GetVMIUID() string {
 	return v.VMIUID
+}
+
+// GetVMIMigrationUID returns the migration job UID.
+// Returns empty string if this is not a migration target pod.
+func (v *VMIInfo) GetVMIMigrationUID() string {
+	return v.MigrationJobUID
 }
