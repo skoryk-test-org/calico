@@ -157,12 +157,12 @@ func cmdAdd(args *skel.CmdArgs) error {
 	}
 	if vmiInfo != nil {
 		// Use VMI-based handle ID for IP stability across VMI pod recreations/migrations
-		handleID = fmt.Sprintf("%s.vmi.%s", conf.Name, vmiInfo.VMIUID)
+		handleID = fmt.Sprintf("%s.vmi.%s", conf.Name, vmiInfo.GetVMIUID())
 		logrus.WithFields(logrus.Fields{
 			"pod":               epIDs.Pod,
 			"namespace":         epIDs.Namespace,
-			"vmiName":           vmiInfo.VMIName,
-			"vmiUID":            vmiInfo.VMIUID,
+			"vmiName":           vmiInfo.GetVMIName(),
+			"vmiUID":            vmiInfo.GetVMIUID(),
 			"isMigrationTarget": vmiInfo.IsMigrationTarget(),
 			"handleID":          handleID,
 		}).Info("Detected KubeVirt virt-launcher pod, using VMI-based handle ID")
@@ -191,7 +191,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 	// Add VMI attributes if this is a virt-launcher pod
 	if vmiInfo != nil {
 		// VMI UID and Name are guaranteed to be present (validated in GetVMIInfo)
-		attrs["vmi"] = vmiInfo.VMIName
+		attrs["vmi"] = vmiInfo.GetVMIName()
 		attrs["migration-role"] = "active"
 	}
 
