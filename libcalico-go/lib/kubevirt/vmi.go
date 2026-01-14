@@ -103,6 +103,13 @@ func GetVMIInfo(pod *corev1.Pod) (*VMIInfo, error) {
 		info.MigrationJobUID = migrationUID
 	}
 
+	// Verify VMI ownership to prevent label spoofing
+	// Check if the pod has an ownerReference with matching VMI UID
+	if err := verifyVMIOwnership(pod, info.VMIUID); err != nil {
+		return nil, fmt.Errorf("VMI ownership verification failed for pod %s/%s: %w",
+			pod.Namespace, pod.Name, err)
+	}
+
 	return info, nil
 }
 
@@ -131,4 +138,28 @@ func (v *VMIInfo) GetVMIUID() string {
 // Returns empty string if this is not a migration target pod.
 func (v *VMIInfo) GetVMIMigrationUID() string {
 	return v.MigrationJobUID
+}
+
+// verifyVMIOwnership validates that the pod is actually owned by the VMI with the given UID.
+// This prevents users from spoofing virt-launcher behavior by adding labels to normal pods.
+// KubeVirt sets the VirtualMachineInstance as the controller owner of virt-launcher pods.
+func verifyVMIOwnership(pod *corev1.Pod, vmiUID string) error {
+	if pod.OwnerReferences == nil || len(pod.OwnerReferences) == 0 {
+		return fmt.Errorf("virt-launcher pod has no owner references")
+	}
+
+	// Look for a VirtualMachineInstance owner with matching UID
+	for _, owner := range pod.OwnerReferences {
+		if owner.Kind == "VirtualMachineInstance" {
+			if string(owner.UID) == vmiUID {
+				// Found matching VMI owner - verification successful
+				return nil
+			}
+			// Found VMI owner but UID doesn't match - this is suspicious
+			return fmt.Errorf("VMI UID mismatch: label has %s but owner reference has %s", vmiUID, owner.UID)
+		}
+	}
+
+	// No VirtualMachineInstance owner found
+	return fmt.Errorf("no VirtualMachineInstance owner reference found (VMI UID from label: %s)", vmiUID)
 }
