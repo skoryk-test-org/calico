@@ -45,6 +45,7 @@ import (
 	calicoclient "github.com/projectcalico/calico/libcalico-go/lib/clientv3"
 	cerrors "github.com/projectcalico/calico/libcalico-go/lib/errors"
 	libipam "github.com/projectcalico/calico/libcalico-go/lib/ipam"
+	"github.com/projectcalico/calico/libcalico-go/lib/kubevirt"
 	cnet "github.com/projectcalico/calico/libcalico-go/lib/net"
 	"github.com/projectcalico/calico/libcalico-go/lib/options"
 	"github.com/projectcalico/calico/libcalico-go/lib/winutils"
@@ -424,10 +425,25 @@ func CmdAddK8s(ctx context.Context, args *skel.CmdArgs, conf types.NetConf, epID
 		utils.ReleaseIPAllocation(logger, conf, args)
 	}
 
+	// Check if this is a KubeVirt migration target pod
+	// For migration target pods, skip route programming by passing empty routes
+	// The source pod keeps the route until migration completes, then Felix updates it
+	routesToProgram := routes
+	if pod, err := client.CoreV1().Pods(epIDs.Namespace).Get(ctx, epIDs.Pod, metav1.GetOptions{}); err == nil {
+		if vmiInfo, err := kubevirt.GetVMIInfo(pod); err == nil && vmiInfo != nil && vmiInfo.IsMigrationTarget() {
+			logger.WithFields(logrus.Fields{
+				"vmiName":         vmiInfo.GetVMIName(),
+				"vmiUID":          vmiInfo.GetVMIUID(),
+				"migrationJobUID": vmiInfo.GetVMIMigrationUID(),
+			}).Info("Migration target pod detected - skipping route programming (Felix will handle after migration)")
+			routesToProgram = []*net.IPNet{} // Empty routes to skip route programming
+		}
+	}
+
 	// Whether the endpoint existed or not, the veth needs (re)creating.
 	desiredVethName := k8sconversion.NewConverter().VethNameForWorkload(epIDs.Namespace, epIDs.Pod)
 	hostVethName, contVethMac, err := d.DoNetworking(
-		ctx, calicoClient, args, result, desiredVethName, routes, endpoint, annot)
+		ctx, calicoClient, args, result, desiredVethName, routesToProgram, endpoint, annot)
 	if err != nil {
 		logger.WithError(err).Error("Error setting up networking")
 		releaseIPAM()

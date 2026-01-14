@@ -192,7 +192,23 @@ func cmdAdd(args *skel.CmdArgs) error {
 	if vmiInfo != nil {
 		// VMI UID and Name are guaranteed to be present (validated in GetVMIInfo)
 		attrs["vmi"] = vmiInfo.GetVMIName()
-		attrs["migration-role"] = "active"
+
+		// Set migration role based on whether this is a migration target
+		if vmiInfo.IsMigrationTarget() {
+			// For migration target pods, mark as target
+			// The source pod info remains in the primary attributes
+			attrs["migration-role"] = "target"
+			attrs["migration-job-uid"] = vmiInfo.GetVMIMigrationUID()
+			logrus.WithFields(logrus.Fields{
+				"pod":             epIDs.Pod,
+				"namespace":       epIDs.Namespace,
+				"vmiName":         vmiInfo.GetVMIName(),
+				"migrationJobUID": vmiInfo.GetVMIMigrationUID(),
+			}).Info("Migration target pod detected - IP will be reused from source pod")
+		} else {
+			// For source/active pods, use active role
+			attrs["migration-role"] = "active"
+		}
 	}
 
 	r := &cniv1.Result{}
