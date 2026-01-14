@@ -873,12 +873,10 @@ func (c ipamClient) autoAssign(ctx context.Context, num int, handleID *string, a
 					logCtx.WithError(maxAllocErr)
 					existingIPs, handleErr := c.handleMaxAllocReached(ctx, *handleID, num, logCtx)
 					if handleErr != nil {
-						if _, ok := handleErr.(ErrInsufficientIPsByHandle); ok {
-							// Partial/no IPs yet, retry the same block
-							continue
-						}
-						// Query failed or other error, break and try next block
-						break
+						// Either insufficient IPs or query failed - both cases should retry
+						// because the concurrent operation may complete on the next attempt
+						logCtx.WithError(handleErr).Debug("Will retry after maxAlloc handling")
+						continue
 					}
 					// Sufficient IPs found
 					ia.IPs = append(ia.IPs, existingIPs...)
@@ -957,12 +955,10 @@ func (c ipamClient) autoAssign(ctx context.Context, num int, handleID *string, a
 							logCtx.WithError(maxAllocErr)
 							existingIPs, handleErr := c.handleMaxAllocReached(ctx, *handleID, num, logCtx)
 							if handleErr != nil {
-								if _, ok := handleErr.(ErrInsufficientIPsByHandle); ok {
-									// Partial/no IPs yet, retry the same block
-									continue
-								}
-								// Query failed or other error, break inner loop and try next block
-								break
+								// Either insufficient IPs or query failed - both cases should retry
+								// because the concurrent operation may complete on the next attempt
+								logCtx.WithError(handleErr).Debug("Will retry after maxAlloc handling in non-affine block")
+								continue
 							}
 							// Sufficient IPs found
 							ia.IPs = append(ia.IPs, existingIPs...)
