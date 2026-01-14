@@ -1076,8 +1076,38 @@ func (c ipamClient) AssignIP(ctx context.Context, args AssignIPArgs) error {
 
 		// Increment handle.
 		if args.HandleID != nil {
-			err := c.incrementHandle(ctx, *args.HandleID, blockCIDR, 1, 0)
+			err := c.incrementHandle(ctx, *args.HandleID, blockCIDR, 1, args.MaxAlloc)
 			if err != nil {
+				// Check if error is due to maxAlloc constraint
+				if maxAllocErr, ok := err.(ErrMaxAllocReached); ok {
+					logCtx := log.WithFields(log.Fields{
+						"handleID": *args.HandleID,
+						"ip":       args.IP.String(),
+					})
+					logCtx.WithError(maxAllocErr)
+
+					// Use the helper function to query existing IPs
+					existingIPNets, handleErr := c.handleMaxAllocReached(ctx, *args.HandleID, 1, logCtx)
+					if handleErr != nil {
+						// Query failed or insufficient IPs - retry
+						logCtx.WithError(handleErr).Debug("Will retry AssignIP after maxAlloc handling")
+						continue
+					}
+
+					// We got existing IPs - check if the requested IP is in the list
+					for _, existingIPNet := range existingIPNets {
+						if existingIPNet.IP.Equal(args.IP.IP) {
+							logCtx.Info("Requested IP is already allocated to this handle, treating as success")
+							return nil
+						}
+					}
+
+					// The handle has other IP(s) but not the requested one
+					logCtx.WithField("existingIPs", existingIPNets).Error("Handle already has different IP(s) allocated")
+					return fmt.Errorf("handle %s already has IP(s) allocated, cannot assign additional IP %s (maxAlloc=%d)",
+						*args.HandleID, args.IP.String(), args.MaxAlloc)
+				}
+
 				log.WithError(err).Warn("Failed to increment handle")
 				return fmt.Errorf("failed to increment handle: %w", err)
 			}

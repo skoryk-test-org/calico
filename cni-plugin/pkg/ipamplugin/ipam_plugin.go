@@ -205,6 +205,12 @@ func cmdAdd(args *skel.CmdArgs) error {
 			Hostname: nodename,
 			Attrs:    attrs,
 		}
+
+		// For VMI pods, set MaxAlloc=1 to ensure only one IP allocation per VMI
+		if vmiInfo != nil {
+			assignArgs.MaxAlloc = 1
+		}
+
 		logger.WithField("assignArgs", assignArgs).Info("Assigning provided IP")
 		assignIPWithLock := func() error {
 			unlock := acquireIPAMLockBestEffort(conf.IPAMLockFile)

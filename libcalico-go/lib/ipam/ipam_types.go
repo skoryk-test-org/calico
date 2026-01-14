@@ -46,6 +46,10 @@ type AssignIPArgs struct {
 
 	// The intended use for the IP address.  Used to determine the affinityType of the host.
 	IntendedUse v3.IPPoolAllowedUse
+
+	// MaxAlloc specifies the maximum number of IPs that can be allocated for this handle.
+	// If 0, no limit is enforced. Used for KubeVirt VMI pods to ensure only one IP allocation per VMI.
+	MaxAlloc int
 }
 
 // AutoAssignArgs defines the set of arguments for assigning one or more
