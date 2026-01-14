@@ -679,6 +679,62 @@ func (i *IPAMAssignments) PartialFulfillmentError() error {
 
 var ErrUseRequired = errors.New("must specify the intended use when assigning an IP")
 
+// ErrInsufficientIPsByHandle is returned when a handle has some IPs allocated but not enough yet.
+// This indicates a concurrent operation is in progress and the caller should retry.
+type ErrInsufficientIPsByHandle struct {
+	HandleID      string
+	ExistingCount int
+	RequiredCount int
+}
+
+func (e ErrInsufficientIPsByHandle) Error() string {
+	return fmt.Sprintf("handle %s has %d IPs allocated but requires %d (concurrent operation in progress)",
+		e.HandleID, e.ExistingCount, e.RequiredCount)
+}
+
+// handleMaxAllocReached handles the case where incrementHandle fails due to maxAlloc constraint.
+// It queries for existing IPs allocated to the handle.
+// Returns:
+//   - []net.IPNet: The existing IPs if sufficient IPs (>= num) were found
+//   - nil, ErrInsufficientIPsByHandle: If partial/no IPs found (caller should retry)
+//   - nil, error: If the query failed
+func (c ipamClient) handleMaxAllocReached(ctx context.Context, handleID string, num int, logCtx *log.Entry) ([]net.IPNet, error) {
+	logCtx.Info("MaxAlloc limit reached, checking for existing allocation")
+
+	// Query for existing IPs allocated to this handle
+	existingIPs, queryErr := c.IPsByHandle(ctx, handleID)
+	if queryErr != nil {
+		logCtx.WithError(queryErr).Warn("Failed to query existing IPs by handle after maxAlloc error")
+		return nil, queryErr
+	}
+
+	if len(existingIPs) >= num {
+		// Case 1: Sufficient IPs already allocated - return them
+		logCtx.WithField("existingIPs", existingIPs).Info("Found sufficient existing IP allocations, reusing them")
+		result := make([]net.IPNet, 0, len(existingIPs))
+		for _, ip := range existingIPs {
+			result = append(result, *ip.Network())
+		}
+		return result, nil
+	}
+
+	// Case 2 & 3: Partial or no IPs - concurrent operation in progress
+	if len(existingIPs) > 0 {
+		logCtx.WithFields(log.Fields{
+			"existingCount": len(existingIPs),
+			"requiredCount": num,
+		}).Info("Partial allocation found, concurrent operation in progress - will retry")
+	} else {
+		logCtx.Info("No existing IPs found yet, concurrent operation in progress - will retry")
+	}
+
+	return nil, ErrInsufficientIPsByHandle{
+		HandleID:      handleID,
+		ExistingCount: len(existingIPs),
+		RequiredCount: num,
+	}
+}
+
 func (c ipamClient) autoAssign(ctx context.Context, num int, handleID *string, attrs map[string]string, requestedPools []net.IPNet, version int, host string, maxNumBlocks int, rsvdAttr *HostReservedAttr, use v3.IPPoolAllowedUse, namespace *corev1.Namespace, maxAlloc int) (*IPAMAssignments, error) {
 	// Default parameters.
 	if use == "" {
@@ -814,23 +870,19 @@ func (c ipamClient) autoAssign(ctx context.Context, num int, handleID *string, a
 
 				// Check if error is due to maxAlloc constraint
 				if maxAllocErr, ok := err.(ErrMaxAllocReached); ok {
-					logCtx.WithError(maxAllocErr).Info("MaxAlloc limit reached, checking for existing allocation")
-					// Another concurrent operation may have already allocated an IP for this handle
-					existingIPs, queryErr := c.IPsByHandle(ctx, *handleID)
-					if queryErr != nil {
-						logCtx.WithError(queryErr).Warn("Failed to query existing IPs by handle after maxAlloc error")
-					} else if len(existingIPs) > 0 {
-						logCtx.WithField("existingIPs", existingIPs).Info("Found existing IP allocation, reusing it")
-						// Convert existing IPs to IPNet format and add to results
-						for _, ip := range existingIPs {
-							ia.IPs = append(ia.IPs, *ip.Network())
+					logCtx.WithError(maxAllocErr)
+					existingIPs, handleErr := c.handleMaxAllocReached(ctx, *handleID, num, logCtx)
+					if handleErr != nil {
+						if _, ok := handleErr.(ErrInsufficientIPsByHandle); ok {
+							// Partial/no IPs yet, retry the same block
+							continue
 						}
-						rem = num - len(ia.IPs)
-						// Exit the block allocation loop since we found IPs
+						// Query failed or other error, break and try next block
 						break
 					}
-					// If no existing IPs found, continue to next block
-					logCtx.Info("No existing IPs found, will try next block")
+					// Sufficient IPs found
+					ia.IPs = append(ia.IPs, existingIPs...)
+					rem = num - len(ia.IPs)
 					break
 				}
 
@@ -902,24 +954,21 @@ func (c ipamClient) autoAssign(ctx context.Context, num int, handleID *string, a
 
 						// Check if error is due to maxAlloc constraint
 						if maxAllocErr, ok := err.(ErrMaxAllocReached); ok {
-							logCtx.WithError(maxAllocErr).Info("MaxAlloc limit reached in non-affine block, checking for existing allocation")
-							// Another concurrent operation may have already allocated an IP for this handle
-							existingIPs, queryErr := c.IPsByHandle(ctx, *handleID)
-							if queryErr != nil {
-								logCtx.WithError(queryErr).Warn("Failed to query existing IPs by handle after maxAlloc error")
-							} else if len(existingIPs) > 0 {
-								logCtx.WithField("existingIPs", existingIPs).Info("Found existing IP allocation, reusing it")
-								// Convert existing IPs to IPNet format and add to results
-								for _, ip := range existingIPs {
-									ia.IPs = append(ia.IPs, *ip.Network())
+							logCtx.WithError(maxAllocErr)
+							existingIPs, handleErr := c.handleMaxAllocReached(ctx, *handleID, num, logCtx)
+							if handleErr != nil {
+								if _, ok := handleErr.(ErrInsufficientIPsByHandle); ok {
+									// Partial/no IPs yet, retry the same block
+									continue
 								}
-								rem = num - len(ia.IPs)
-								// Exit both loops since we found IPs
-								goto doneLookingForIPs
+								// Query failed or other error, break inner loop and try next block
+								break
 							}
-							// If no existing IPs found, continue trying other blocks
-							logCtx.Info("No existing IPs found, will try next block")
-							break
+							// Sufficient IPs found
+							ia.IPs = append(ia.IPs, existingIPs...)
+							rem = num - len(ia.IPs)
+							// Exit both loops since we found IPs
+							goto doneLookingForIPs
 						}
 
 						logCtx.WithError(err).Warningf("Failed to assign IPs from non-affine block in pool %s", p.Spec.CIDR)
