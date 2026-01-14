@@ -91,6 +91,10 @@ type AutoAssignArgs struct {
 	// This field is required.
 	IntendedUse v3.IPPoolAllowedUse
 
+	// MaxAlloc specifies the maximum number of IPs that can be allocated across all blocks for this handle.
+	// If 0, no limit is enforced. Used for KubeVirt VMI pods to ensure only one IP allocation per VMI.
+	MaxAlloc int
+
 	// The namespace object for namespaceSelector support.
 	Namespace *corev1.Namespace
 }

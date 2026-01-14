@@ -63,3 +63,12 @@ func (h allocationHandle) decrementBlock(blockCidr cnet.IPNet, num int) (*int, e
 func (h allocationHandle) empty() bool {
 	return len(h.Block) == 0
 }
+
+// totalCount returns the total number of IP allocations across all blocks for this handle.
+func (h allocationHandle) totalCount() int {
+	total := 0
+	for _, count := range h.Block {
+		total += count
+	}
+	return total
+}

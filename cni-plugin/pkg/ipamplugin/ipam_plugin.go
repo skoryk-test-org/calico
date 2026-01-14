@@ -156,7 +156,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("failed to get VMI info: %w", err)
 	}
 	if vmiInfo != nil {
-		// Use VMI-based handle ID for IP stability across pod recreations/migrations
+		// Use VMI-based handle ID for IP stability across VMI pod recreations/migrations
 		handleID = fmt.Sprintf("%s.vmi.%s", conf.Name, vmiInfo.VMIUID)
 		logrus.WithFields(logrus.Fields{
 			"pod":               epIDs.Pod,
@@ -191,8 +191,8 @@ func cmdAdd(args *skel.CmdArgs) error {
 	// Add VMI attributes if this is a virt-launcher pod
 	if vmiInfo != nil {
 		// VMI UID and Name are guaranteed to be present (validated in GetVMIInfo)
-		attrs["vmi"] = vmiInfo.VMIUID
-		attrs["vmi-name"] = vmiInfo.VMIName
+		attrs["vmi"] = vmiInfo.VMIName
+		attrs["migration-role"] = "active"
 	}
 
 	r := &cniv1.Result{}
@@ -313,6 +313,49 @@ func cmdAdd(args *skel.CmdArgs) error {
 			Attrs:            attrs,
 			IntendedUse:      v3.IPPoolAllowedUseWorkload,
 			Namespace:        namespaceObj,
+		}
+
+		// For VMI pods, set MaxAlloc=1 to ensure only one IP allocation per VMI
+		// and check for existing IPs before attempting allocation
+		if vmiInfo != nil {
+			assignArgs.MaxAlloc = 1
+
+			// Check if an IP already exists for this VMI handle to enable reuse
+			logger.Debug("Checking for existing IP allocation for VMI")
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			existingIPs, err := calicoClient.IPAM().IPsByHandle(ctx, handleID)
+			cancel()
+
+			if err != nil {
+				logger.WithError(err).Warn("Failed to check for existing IPs for VMI handle")
+			} else if len(existingIPs) > 0 {
+				logger.WithFields(logrus.Fields{
+					"existingIPs": existingIPs,
+					"vmiUID":      vmiInfo.GetVMIUID(),
+					"vmiName":     vmiInfo.GetVMIName(),
+				}).Info("Found existing IP allocation for VMI, reusing IP")
+
+				// Reuse the existing IPs - construct result directly
+				for _, ip := range existingIPs {
+					if ip.IP.To4() != nil {
+						// IPv4
+						ipNetwork := net.IPNet{IP: ip.IP, Mask: net.CIDRMask(32, 32)}
+						r.IPs = append(r.IPs, &cniv1.IPConfig{
+							Address: ipNetwork,
+						})
+					} else {
+						// IPv6
+						ipNetwork := net.IPNet{IP: ip.IP, Mask: net.CIDRMask(128, 128)}
+						r.IPs = append(r.IPs, &cniv1.IPConfig{
+							Address: ipNetwork,
+						})
+					}
+				}
+
+				logger.WithFields(logrus.Fields{"result.IPs": r.IPs}).Info("Reused existing VMI IP allocation")
+				// Print result and return early - no need to allocate new IPs
+				return cnitypes.PrintResult(r, conf.CNIVersion)
+			}
 		}
 
 		if runtime.GOOS == "windows" {

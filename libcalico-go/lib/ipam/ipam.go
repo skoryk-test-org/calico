@@ -121,7 +121,7 @@ func (c ipamClient) AutoAssign(ctx context.Context, args AutoAssignArgs) (*IPAMA
 				return nil, nil, fmt.Errorf("provided IPv4 IPPools list contains one or more IPv6 IPPools")
 			}
 		}
-		v4ia, err = c.autoAssign(ctx, args.Num4, args.HandleID, args.Attrs, args.IPv4Pools, 4, hostname, args.MaxBlocksPerHost, args.HostReservedAttrIPv4s, args.IntendedUse, args.Namespace)
+		v4ia, err = c.autoAssign(ctx, args.Num4, args.HandleID, args.Attrs, args.IPv4Pools, 4, hostname, args.MaxBlocksPerHost, args.HostReservedAttrIPv4s, args.IntendedUse, args.Namespace, args.MaxAlloc)
 		if err != nil {
 			log.Errorf("Error assigning IPV4 addresses: %v", err)
 			return v4ia, nil, err
@@ -136,7 +136,7 @@ func (c ipamClient) AutoAssign(ctx context.Context, args AutoAssignArgs) (*IPAMA
 				return nil, nil, fmt.Errorf("provided IPv6 IPPools list contains one or more IPv4 IPPools")
 			}
 		}
-		v6ia, err = c.autoAssign(ctx, args.Num6, args.HandleID, args.Attrs, args.IPv6Pools, 6, hostname, args.MaxBlocksPerHost, args.HostReservedAttrIPv6s, args.IntendedUse, args.Namespace)
+		v6ia, err = c.autoAssign(ctx, args.Num6, args.HandleID, args.Attrs, args.IPv6Pools, 6, hostname, args.MaxBlocksPerHost, args.HostReservedAttrIPv6s, args.IntendedUse, args.Namespace, args.MaxAlloc)
 		if err != nil {
 			log.Errorf("Error assigning IPV6 addresses: %v", err)
 			return v4ia, v6ia, err
@@ -679,7 +679,7 @@ func (i *IPAMAssignments) PartialFulfillmentError() error {
 
 var ErrUseRequired = errors.New("must specify the intended use when assigning an IP")
 
-func (c ipamClient) autoAssign(ctx context.Context, num int, handleID *string, attrs map[string]string, requestedPools []net.IPNet, version int, host string, maxNumBlocks int, rsvdAttr *HostReservedAttr, use v3.IPPoolAllowedUse, namespace *corev1.Namespace) (*IPAMAssignments, error) {
+func (c ipamClient) autoAssign(ctx context.Context, num int, handleID *string, attrs map[string]string, requestedPools []net.IPNet, version int, host string, maxNumBlocks int, rsvdAttr *HostReservedAttr, use v3.IPPoolAllowedUse, namespace *corev1.Namespace, maxAlloc int) (*IPAMAssignments, error) {
 	// Default parameters.
 	if use == "" {
 		log.Error("Attempting to auto-assign an IP without specifying intended use.")
@@ -794,7 +794,7 @@ func (c ipamClient) autoAssign(ctx context.Context, num int, handleID *string, a
 		// We have got a block b.
 		for i := 0; i < datastoreRetries; i++ {
 			assignStart := time.Now()
-			newIPs, err := c.assignFromExistingBlock(ctx, b, rem, handleID, attrs, affinityCfg, config.StrictAffinity, reservations)
+			newIPs, err := c.assignFromExistingBlock(ctx, b, rem, handleID, attrs, affinityCfg, config.StrictAffinity, reservations, maxAlloc)
 			if err != nil {
 				if _, ok := err.(cerrors.ErrorResourceUpdateConflict); ok {
 					log.WithError(err).Debug("CAS Error assigning from new block - retry")
@@ -811,6 +811,29 @@ func (c ipamClient) autoAssign(ctx context.Context, num int, handleID *string, a
 					// Block b is in sync with datastore. Retry assigning IP.
 					continue
 				}
+
+				// Check if error is due to maxAlloc constraint
+				if maxAllocErr, ok := err.(ErrMaxAllocReached); ok {
+					logCtx.WithError(maxAllocErr).Info("MaxAlloc limit reached, checking for existing allocation")
+					// Another concurrent operation may have already allocated an IP for this handle
+					existingIPs, queryErr := c.IPsByHandle(ctx, *handleID)
+					if queryErr != nil {
+						logCtx.WithError(queryErr).Warn("Failed to query existing IPs by handle after maxAlloc error")
+					} else if len(existingIPs) > 0 {
+						logCtx.WithField("existingIPs", existingIPs).Info("Found existing IP allocation, reusing it")
+						// Convert existing IPs to IPNet format and add to results
+						for _, ip := range existingIPs {
+							ia.IPs = append(ia.IPs, *ip.Network())
+						}
+						rem = num - len(ia.IPs)
+						// Exit the block allocation loop since we found IPs
+						break
+					}
+					// If no existing IPs found, continue to next block
+					logCtx.Info("No existing IPs found, will try next block")
+					break
+				}
+
 				logCtx.WithError(err).Warningf("Failed to assign IPs in newly allocated block")
 				ia.AddMsg("Failed to assign IPs in newly allocated block")
 				break
@@ -870,12 +893,35 @@ func (c ipamClient) autoAssign(ctx context.Context, num int, handleID *string, a
 
 					// Attempt to assign from the block.
 					logCtx.Infof("Attempting to assign IPs from non-affine block %s", blockCIDR.String())
-					newIPs, err := c.assignFromExistingBlock(ctx, b, rem, handleID, attrs, affinityCfg, false, reservations)
+					newIPs, err := c.assignFromExistingBlock(ctx, b, rem, handleID, attrs, affinityCfg, false, reservations, maxAlloc)
 					if err != nil {
 						if _, ok := err.(cerrors.ErrorResourceUpdateConflict); ok {
 							logCtx.WithError(err).Debug("CAS error assigning from non-affine block - retry")
 							continue
 						}
+
+						// Check if error is due to maxAlloc constraint
+						if maxAllocErr, ok := err.(ErrMaxAllocReached); ok {
+							logCtx.WithError(maxAllocErr).Info("MaxAlloc limit reached in non-affine block, checking for existing allocation")
+							// Another concurrent operation may have already allocated an IP for this handle
+							existingIPs, queryErr := c.IPsByHandle(ctx, *handleID)
+							if queryErr != nil {
+								logCtx.WithError(queryErr).Warn("Failed to query existing IPs by handle after maxAlloc error")
+							} else if len(existingIPs) > 0 {
+								logCtx.WithField("existingIPs", existingIPs).Info("Found existing IP allocation, reusing it")
+								// Convert existing IPs to IPNet format and add to results
+								for _, ip := range existingIPs {
+									ia.IPs = append(ia.IPs, *ip.Network())
+								}
+								rem = num - len(ia.IPs)
+								// Exit both loops since we found IPs
+								goto doneLookingForIPs
+							}
+							// If no existing IPs found, continue trying other blocks
+							logCtx.Info("No existing IPs found, will try next block")
+							break
+						}
+
 						logCtx.WithError(err).Warningf("Failed to assign IPs from non-affine block in pool %s", p.Spec.CIDR)
 						break
 					}
@@ -894,6 +940,8 @@ func (c ipamClient) autoAssign(ctx context.Context, num int, handleID *string, a
 		}
 	}
 
+doneLookingForIPs:
+	// Remove the old retry logic that was checking at the end
 	logCtx.Infof("Auto-assigned %d out of %d IPv%ds: %v", len(ia.IPs), num, version, ia.IPs)
 	return ia, nil
 }
@@ -983,7 +1031,7 @@ func (c ipamClient) AssignIP(ctx context.Context, args AssignIPArgs) error {
 
 		// Increment handle.
 		if args.HandleID != nil {
-			err := c.incrementHandle(ctx, *args.HandleID, blockCIDR, 1)
+			err := c.incrementHandle(ctx, *args.HandleID, blockCIDR, 1, 0)
 			if err != nil {
 				log.WithError(err).Warn("Failed to increment handle")
 				return fmt.Errorf("failed to increment handle: %w", err)
@@ -1238,7 +1286,7 @@ func (c ipamClient) releaseIPsFromBlock(ctx context.Context, handleMap map[strin
 	return nil, errors.New("Max retries hit - excessive concurrent IPAM requests")
 }
 
-func (c ipamClient) assignFromExistingBlock(ctx context.Context, block *model.KVPair, num int, handleID *string, attrs map[string]string, affinityCfg AffinityConfig, affCheck bool, reservations addrFilter) ([]net.IPNet, error) {
+func (c ipamClient) assignFromExistingBlock(ctx context.Context, block *model.KVPair, num int, handleID *string, attrs map[string]string, affinityCfg AffinityConfig, affCheck bool, reservations addrFilter, maxAlloc int) ([]net.IPNet, error) {
 	blockCIDR := block.Key.(model.BlockKey).CIDR
 	logCtx := log.WithFields(log.Fields{string(affinityCfg.AffinityType): affinityCfg.Host, "block": blockCIDR})
 	if handleID != nil {
@@ -1262,10 +1310,13 @@ func (c ipamClient) assignFromExistingBlock(ctx context.Context, block *model.KV
 	// Increment handle count.
 	if handleID != nil {
 		logCtx.Debug("Incrementing handle")
-		err := c.incrementHandle(ctx, *handleID, blockCIDR, num)
+		err := c.incrementHandle(ctx, *handleID, blockCIDR, num, maxAlloc)
 		if err != nil {
-			log.WithError(err).Warn("Failed to increment handle")
-			return nil, fmt.Errorf("failed to increment handle: %w", err)
+			// If incrementHandle fails due to maxAlloc constraint, return the error so caller can handle it.
+			// The IPs allocated in the block's memory structure won't be persisted since
+			// we return before updateBlock.
+			logCtx.WithError(err).Info("Failed to increment handle")
+			return nil, err
 		}
 	}
 
@@ -1803,7 +1854,19 @@ func (c ipamClient) releaseByHandle(ctx context.Context, blockCIDR net.IPNet, op
 	return errors.New("Hit max retries")
 }
 
-func (c ipamClient) incrementHandle(ctx context.Context, handleID string, blockCIDR net.IPNet, num int) error {
+// ErrMaxAllocReached is returned when a handle already has the maximum number of allocations.
+type ErrMaxAllocReached struct {
+	HandleID     string
+	CurrentCount int
+	MaxAlloc     int
+}
+
+func (e ErrMaxAllocReached) Error() string {
+	return fmt.Sprintf("handle %s already has %d allocation(s), cannot allocate more (maxAlloc=%d)",
+		e.HandleID, e.CurrentCount, e.MaxAlloc)
+}
+
+func (c ipamClient) incrementHandle(ctx context.Context, handleID string, blockCIDR net.IPNet, num int, maxAlloc int) error {
 	var obj *model.KVPair
 	var err error
 	for i := 0; i < datastoreRetries; i++ {
@@ -1828,6 +1891,18 @@ func (c ipamClient) incrementHandle(ctx context.Context, handleID string, blockC
 
 		// Get the handle from the KVPair.
 		handle := allocationHandle{obj.Value.(*model.IPAMHandle)}
+
+		// Check if maxAlloc constraint would be violated before incrementing
+		if maxAlloc > 0 {
+			currentTotal := handle.totalCount()
+			if currentTotal+num > maxAlloc {
+				return ErrMaxAllocReached{
+					HandleID:     handleID,
+					CurrentCount: currentTotal,
+					MaxAlloc:     maxAlloc,
+				}
+			}
+		}
 
 		// Increment the handle for this block.
 		handle.incrementBlock(blockCIDR, num)
