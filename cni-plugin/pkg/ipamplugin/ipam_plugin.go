@@ -190,7 +190,6 @@ func cmdAdd(args *skel.CmdArgs) error {
 	}
 	// Add VMI attributes if this is a virt-launcher pod
 	if vmiInfo != nil {
-		// VMI UID and Name are guaranteed to be present (validated in GetVMIInfo)
 		attrs["vmi"] = vmiInfo.GetVMIName()
 
 		// Set migration role based on whether this is a migration target
