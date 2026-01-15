@@ -524,7 +524,7 @@ func acquireIPAMLockBestEffort(path string) unlockFn {
 // Returns (vmiInfo, nil) if the pod is a valid virt-launcher pod.
 // Returns (nil, nil) if the pod is not a virt-launcher pod.
 // Returns (nil, error) if there was an error retrieving or validating VMI information.
-func getVMIInfoForPod(conf types.NetConf, epIDs *utils.WEPIdentifiers) (*kubevirt.VMIInfo, error) {
+func getVMIInfoForPod(conf types.NetConf, epIDs *utils.WEPIdentifiers) (*kubevirt.PodVMIInfo, error) {
 	// Only check for VMI info in Kubernetes orchestrator
 	if epIDs.Orchestrator != "k8s" || epIDs.Pod == "" || epIDs.Namespace == "" {
 		return nil, nil
@@ -543,7 +543,7 @@ func getVMIInfoForPod(conf types.NetConf, epIDs *utils.WEPIdentifiers) (*kubevir
 		return nil, err
 	}
 
-	vmiInfo, err := kubevirt.GetVMIInfo(pod)
+	vmiInfo, err := kubevirt.GetPodVMIInfo(pod)
 	if err != nil {
 		logrus.WithError(err).Error("Invalid virt-launcher pod configuration")
 		return nil, err
@@ -569,7 +569,7 @@ func isVMIDeletionInProgress(conf types.NetConf, epIDs *utils.WEPIdentifiers) (b
 		return false, fmt.Errorf("failed to get pod: %w", err)
 	}
 
-	vmiInfo, err := kubevirt.GetVMIInfo(pod)
+	vmiInfo, err := kubevirt.GetPodVMIInfo(pod)
 	if err != nil || vmiInfo == nil {
 		return false, err
 	}

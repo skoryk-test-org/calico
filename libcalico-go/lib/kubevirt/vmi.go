@@ -1,4 +1,4 @@
-// Copyright (c) 2025-2026 Tigera, Inc. All rights reserved.
+// Copyright (c) 2026 Tigera, Inc. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -32,9 +32,14 @@
 package kubevirt
 
 import (
+	"context"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"kubevirt.io/client-go/kubecli"
 )
 
 // KubeVirt label keys
@@ -50,10 +55,15 @@ const (
 
 	// ValueVirtLauncher is the value of LabelKubeVirt for virt-launcher pods
 	ValueVirtLauncher = "virt-launcher"
+
+	// VMI API Group, Version, and Resource for dynamic client
+	VMIGroup        = "kubevirt.io"
+	VMIVersion      = "v1"
+	VMIResourceName = "virtualmachineinstances"
 )
 
-// VMIInfo contains KubeVirt VMI-related information extracted from pod labels
-type VMIInfo struct {
+// PodVMIInfo contains KubeVirt VMI-related information extracted from pod labels
+type PodVMIInfo struct {
 	VMIName         string
 	VMIUID          string
 	MigrationJobUID string
@@ -62,12 +72,41 @@ type VMIInfo struct {
 	isVirtLauncher bool
 }
 
-// GetVMIInfo extracts VMI information from a pod's labels.
+// VMIResource contains information about a VirtualMachineInstance resource queried from the Kubernetes API
+type VMIResource struct {
+	// Name is the VMI name
+	Name string
+	// Namespace is the VMI namespace
+	Namespace string
+	// UID is the VMI UID
+	UID string
+	// DeletionTimestamp indicates when the VMI was marked for deletion
+	// If nil, the VMI is not being deleted
+	DeletionTimestamp *metav1.Time
+	// CreationTimestamp is when the VMI was created
+	CreationTimestamp metav1.Time
+}
+
+// IsDeletionInProgress returns true if the VMI has a deletion timestamp set
+func (v *VMIResource) IsDeletionInProgress() bool {
+	return v.DeletionTimestamp != nil && !v.DeletionTimestamp.IsZero()
+}
+
+// GetDeletionGracePeriod returns the time since deletion timestamp was set
+// Returns 0 if VMI is not being deleted
+func (v *VMIResource) GetDeletionGracePeriod() time.Duration {
+	if !v.IsDeletionInProgress() {
+		return 0
+	}
+	return time.Since(v.DeletionTimestamp.Time)
+}
+
+// GetPodVMIInfo extracts VMI information from a pod's labels.
 // Returns:
-//   - (*VMIInfo, nil) if the pod is a valid virt-launcher pod with all required labels
+//   - (*PodVMIInfo, nil) if the pod is a valid virt-launcher pod with all required labels
 //   - (nil, nil) if the pod is not a virt-launcher pod
 //   - (nil, error) if the pod is a virt-launcher pod but missing critical labels (VMIUID or VMIName)
-func GetVMIInfo(pod *corev1.Pod) (*VMIInfo, error) {
+func GetPodVMIInfo(pod *corev1.Pod) (*PodVMIInfo, error) {
 	if pod == nil || pod.Labels == nil {
 		return nil, nil
 	}
@@ -78,7 +117,7 @@ func GetVMIInfo(pod *corev1.Pod) (*VMIInfo, error) {
 		return nil, nil
 	}
 
-	info := &VMIInfo{
+	info := &PodVMIInfo{
 		isVirtLauncher: true,
 	}
 
@@ -114,29 +153,29 @@ func GetVMIInfo(pod *corev1.Pod) (*VMIInfo, error) {
 }
 
 // IsVirtLauncherPod returns true if the pod is a KubeVirt virt-launcher pod
-func (v *VMIInfo) IsVirtLauncherPod() bool {
+func (v *PodVMIInfo) IsVirtLauncherPod() bool {
 	return v.isVirtLauncher
 }
 
 // IsMigrationTarget returns true if this pod is a migration target pod.
 // Migration target pods have the kubevirt.io/migrationJobUID label set.
-func (v *VMIInfo) IsMigrationTarget() bool {
+func (v *PodVMIInfo) IsMigrationTarget() bool {
 	return v.MigrationJobUID != ""
 }
 
 // GetVMIName returns the VMI name
-func (v *VMIInfo) GetVMIName() string {
+func (v *PodVMIInfo) GetVMIName() string {
 	return v.VMIName
 }
 
 // GetVMIUID returns the VMI UID
-func (v *VMIInfo) GetVMIUID() string {
+func (v *PodVMIInfo) GetVMIUID() string {
 	return v.VMIUID
 }
 
 // GetVMIMigrationUID returns the migration job UID.
 // Returns empty string if this is not a migration target pod.
-func (v *VMIInfo) GetVMIMigrationUID() string {
+func (v *PodVMIInfo) GetVMIMigrationUID() string {
 	return v.MigrationJobUID
 }
 
@@ -162,4 +201,55 @@ func verifyVMIOwnership(pod *corev1.Pod, vmiUID string) error {
 
 	// No VirtualMachineInstance owner found
 	return fmt.Errorf("no VirtualMachineInstance owner reference found (VMI UID from label: %s)", vmiUID)
+}
+
+// GetVMIResourceByUID queries the Kubernetes API for a VirtualMachineInstance with the given UID
+// and returns a VMIResource containing its metadata.
+// Returns:
+//   - (*VMIResource, nil) if the VMI is found
+//   - (nil, error) if there was an error querying the API or VMI not found
+func GetVMIResourceByUID(ctx context.Context, virtClient kubecli.KubevirtClient, namespace, vmiUID string) (*VMIResource, error) {
+	// List VMIs in the namespace
+	vmiList, err := virtClient.VirtualMachineInstance(namespace).List(ctx, &metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list VMIs in namespace %s: %w", namespace, err)
+	}
+
+	// Find the VMI with matching UID
+	for _, vmi := range vmiList.Items {
+		if string(vmi.UID) == vmiUID {
+			// Found the VMI, populate VMIResource
+			return &VMIResource{
+				Name:              vmi.Name,
+				Namespace:         vmi.Namespace,
+				UID:               string(vmi.UID),
+				CreationTimestamp: vmi.CreationTimestamp,
+				DeletionTimestamp: vmi.DeletionTimestamp,
+			}, nil
+		}
+	}
+
+	// VMI with given UID not found
+	return nil, fmt.Errorf("VMI with UID %s not found in namespace %s", vmiUID, namespace)
+}
+
+// GetVMIResourceByName queries the Kubernetes API for a VirtualMachineInstance with the given name
+// and returns a VMIResource containing its metadata.
+// Returns:
+//   - (*VMIResource, nil) if the VMI is found
+//   - (nil, error) if there was an error querying the API or VMI not found
+func GetVMIResourceByName(ctx context.Context, virtClient kubecli.KubevirtClient, namespace, vmiName string) (*VMIResource, error) {
+	// Get the VMI
+	vmi, err := virtClient.VirtualMachineInstance(namespace).Get(ctx, vmiName, &metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get VMI %s in namespace %s: %w", vmiName, namespace, err)
+	}
+
+	return &VMIResource{
+		Name:              vmi.Name,
+		Namespace:         vmi.Namespace,
+		UID:               string(vmi.UID),
+		CreationTimestamp: vmi.CreationTimestamp,
+		DeletionTimestamp: vmi.DeletionTimestamp,
+	}, nil
 }

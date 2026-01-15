@@ -429,7 +429,7 @@ func CmdAddK8s(ctx context.Context, args *skel.CmdArgs, conf types.NetConf, epID
 	// For migration target pods, skip route programming by passing empty routes
 	// The source pod keeps the route until migration completes, then Felix updates it
 	if pod, err := client.CoreV1().Pods(epIDs.Namespace).Get(ctx, epIDs.Pod, metav1.GetOptions{}); err == nil {
-		if vmiInfo, err := kubevirt.GetVMIInfo(pod); err == nil && vmiInfo != nil && vmiInfo.IsMigrationTarget() {
+		if vmiInfo, err := kubevirt.GetPodVMIInfo(pod); err == nil && vmiInfo != nil && vmiInfo.IsMigrationTarget() {
 			logger.WithFields(logrus.Fields{
 				"vmiName":         vmiInfo.GetVMIName(),
 				"vmiUID":          vmiInfo.GetVMIUID(),
