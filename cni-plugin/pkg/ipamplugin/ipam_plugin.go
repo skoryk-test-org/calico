@@ -24,6 +24,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/containernetworking/cni/pkg/skel"
@@ -34,7 +35,11 @@ import (
 	v3 "github.com/projectcalico/api/pkg/apis/projectcalico/v3"
 	"github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/projectcalico/calico/cni-plugin/internal/pkg/utils"
 	"github.com/projectcalico/calico/cni-plugin/pkg/k8s"
@@ -47,6 +52,7 @@ import (
 	"github.com/projectcalico/calico/libcalico-go/lib/kubevirt"
 	"github.com/projectcalico/calico/libcalico-go/lib/logutils"
 	cnet "github.com/projectcalico/calico/libcalico-go/lib/net"
+	"github.com/projectcalico/calico/libcalico-go/lib/winutils"
 )
 
 func Main(version string) {
@@ -546,6 +552,93 @@ func getVMIInfoForPod(conf types.NetConf, epIDs *utils.WEPIdentifiers) (*kubevir
 	return vmiInfo, nil
 }
 
+// isVMIDeletionInProgress checks if the VMI associated with this pod has a deletion timestamp
+func isVMIDeletionInProgress(conf types.NetConf, epIDs *utils.WEPIdentifiers) (bool, error) {
+	// Create Kubernetes client
+	k8sClient, err := k8s.NewK8sClient(conf, logrus.WithFields(logrus.Fields{
+		"pod":       epIDs.Pod,
+		"namespace": epIDs.Namespace,
+	}))
+	if err != nil {
+		return false, fmt.Errorf("failed to create Kubernetes client: %w", err)
+	}
+
+	// Get the pod to extract VMI name
+	pod, err := k8sClient.CoreV1().Pods(epIDs.Namespace).Get(context.Background(), epIDs.Pod, metav1.GetOptions{})
+	if err != nil {
+		return false, fmt.Errorf("failed to get pod: %w", err)
+	}
+
+	vmiInfo, err := kubevirt.GetVMIInfo(pod)
+	if err != nil || vmiInfo == nil {
+		return false, err
+	}
+
+	// Create dynamic client using the same config approach as k8s client
+	// Build rest config
+	kubeconfig := conf.Kubernetes.Kubeconfig
+	configOverrides := &clientcmd.ConfigOverrides{}
+	conf.Policy.K8sAPIRoot = strings.Split(conf.Policy.K8sAPIRoot, "/api/")[0]
+
+	overridesMap := []struct {
+		variable *string
+		value    string
+	}{
+		{&configOverrides.ClusterInfo.Server, conf.Policy.K8sAPIRoot},
+		{&configOverrides.AuthInfo.ClientCertificate, conf.Policy.K8sClientCertificate},
+		{&configOverrides.AuthInfo.ClientKey, conf.Policy.K8sClientKey},
+		{&configOverrides.ClusterInfo.CertificateAuthority, conf.Policy.K8sCertificateAuthority},
+		{&configOverrides.AuthInfo.Token, conf.Policy.K8sAuthToken},
+	}
+
+	for _, override := range overridesMap {
+		if override.value != "" {
+			*override.variable = override.value
+		}
+	}
+
+	if conf.Kubernetes.K8sAPIRoot != "" {
+		configOverrides.ClusterInfo.Server = conf.Kubernetes.K8sAPIRoot
+	}
+
+	config, err := winutils.NewNonInteractiveDeferredLoadingClientConfig(
+		&clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfig},
+		configOverrides)
+	if err != nil {
+		return false, fmt.Errorf("failed to create k8s config: %w", err)
+	}
+
+	dynamicClient, err := dynamic.NewForConfig(config)
+	if err != nil {
+		return false, fmt.Errorf("failed to create dynamic client: %w", err)
+	}
+
+	// VirtualMachineInstance GVR
+	vmiGVR := schema.GroupVersionResource{
+		Group:    "kubevirt.io",
+		Version:  "v1",
+		Resource: "virtualmachineinstances",
+	}
+
+	// Get the VMI
+	vmi, err := dynamicClient.Resource(vmiGVR).Namespace(epIDs.Namespace).Get(
+		context.Background(),
+		vmiInfo.GetVMIName(),
+		metav1.GetOptions{},
+	)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			// VMI doesn't exist, consider it as deletion in progress
+			return true, nil
+		}
+		return false, fmt.Errorf("failed to get VMI %s: %w", vmiInfo.GetVMIName(), err)
+	}
+
+	// Check if VMI has deletion timestamp
+	deletionTimestamp := vmi.GetDeletionTimestamp()
+	return deletionTimestamp != nil, nil
+}
+
 func cmdDel(args *skel.CmdArgs) error {
 	conf := types.NetConf{}
 	if err := json.Unmarshal(args.StdinData, &conf); err != nil {
@@ -572,7 +665,39 @@ func cmdDel(args *skel.CmdArgs) error {
 		return fmt.Errorf("error constructing WorkloadEndpoint name: %s", err)
 	}
 
+	// Default handle ID based on container ID
 	handleID := utils.GetHandleID(conf.Name, args.ContainerID, epIDs.WEPName)
+
+	// Check if this is a KubeVirt virt-launcher pod
+	vmiInfo, err := getVMIInfoForPod(conf, epIDs)
+	if err != nil {
+		return fmt.Errorf("failed to get VMI info: %w", err)
+	}
+
+	// Track if VMI deletion is in progress
+	vmiDeletionInProgress := false
+
+	if vmiInfo != nil {
+		// Use VMI-based handle ID
+		handleID = fmt.Sprintf("%s.vmi.%s", conf.Name, vmiInfo.GetVMIUID())
+
+		// Check if VMI has deletion timestamp (VMI is being deleted)
+		vmiDeletionInProgress, err = isVMIDeletionInProgress(conf, epIDs)
+		if err != nil {
+			logrus.WithError(err).Warn("Failed to check VMI deletion status, assuming VMI deletion in progress")
+			vmiDeletionInProgress = true
+		}
+
+		logrus.WithFields(logrus.Fields{
+			"pod":                   epIDs.Pod,
+			"namespace":             epIDs.Namespace,
+			"vmiName":               vmiInfo.GetVMIName(),
+			"vmiUID":                vmiInfo.GetVMIUID(),
+			"vmiDeletionInProgress": vmiDeletionInProgress,
+			"handleID":              handleID,
+		}).Info("Detected KubeVirt virt-launcher pod deletion")
+	}
+
 	logger := logrus.WithFields(logrus.Fields{
 		"Workload":    epIDs.WEPName,
 		"ContainerID": epIDs.ContainerID,
@@ -591,6 +716,30 @@ func cmdDel(args *skel.CmdArgs) error {
 	unlock := acquireIPAMLockBestEffort(conf.IPAMLockFile)
 	defer unlock()
 
+	// For VMI pods, handle deletion based on VMI status
+	if vmiInfo != nil {
+		if vmiDeletionInProgress {
+			// VMI is being deleted - release the IP completely
+			logger.Info("VMI deletion in progress - releasing IP by handle")
+			if err := calicoClient.IPAM().ReleaseByHandle(ctx, handleID); err != nil {
+				if _, ok := err.(errors.ErrorResourceDoesNotExist); !ok {
+					logger.WithError(err).Error("Failed to release address")
+					return err
+				}
+				logger.Warn("Asked to release address but it doesn't exist. Ignoring")
+			} else {
+				logger.Info("Released address using handleID")
+			}
+		} else {
+			// VMI still exists - pod is being recreated or migration is happening
+			// TODO: Remove pod-specific attributes from IPAM block without releasing IP
+			// For now, just log that we're skipping release
+			logger.Info("VMI still exists - skipping IP release (IP will be reused by new pod)")
+		}
+		return nil
+	}
+
+	// For non-VMI pods, use the standard release logic
 	if err := calicoClient.IPAM().ReleaseByHandle(ctx, handleID); err != nil {
 		if _, ok := err.(errors.ErrorResourceDoesNotExist); !ok {
 			logger.WithError(err).Error("Failed to release address")
