@@ -34,7 +34,6 @@ package kubevirt
 import (
 	"context"
 	"fmt"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -85,25 +84,23 @@ type VMIResource struct {
 	// DeletionTimestamp indicates when the VMI was marked for deletion
 	// If nil, the VMI is not being deleted
 	DeletionTimestamp *metav1.Time
-	// CreationTimestamp is when the VMI was created
-	CreationTimestamp metav1.Time
 	// ActivePods is a mapping of pod UID to node name
 	// Multiple pods can be active during migration (source and target)
 	ActivePods map[string]string
+	// MigrationUID is the UID of the active migration (if any)
+	// Empty string if no migration is in progress
+	MigrationUID string
+	// MigrationTargetPod is the name of the target pod during migration
+	// Empty string if no migration is in progress
+	MigrationTargetPod string
+	// MigrationSourcePod is the name of the source pod during migration
+	// Empty string if no migration is in progress
+	MigrationSourcePod string
 }
 
 // IsDeletionInProgress returns true if the VMI has a deletion timestamp set
 func (v *VMIResource) IsDeletionInProgress() bool {
 	return v.DeletionTimestamp != nil && !v.DeletionTimestamp.IsZero()
-}
-
-// GetDeletionGracePeriod returns the time since deletion timestamp was set
-// Returns 0 if VMI is not being deleted
-func (v *VMIResource) GetDeletionGracePeriod() time.Duration {
-	if !v.IsDeletionInProgress() {
-		return 0
-	}
-	return time.Since(v.DeletionTimestamp.Time)
 }
 
 // GetPodVMIInfo extracts VMI information from a pod's labels and verifies it against
@@ -163,15 +160,35 @@ func GetPodVMIInfo(pod *corev1.Pod, virtClient kubecli.KubevirtClient) (*PodVMII
 			pod.Namespace, pod.Name, podUIDStr)
 	}
 
-	// Create PodVMIInfo with embedded VMIResource
-	info := &PodVMIInfo{
-		VMIResource:    vmiResource,
-		isVirtLauncher: true,
+	// Extract migration job UID from pod labels (optional - only present on target pods during migration)
+	migrationUIDFromLabel := ""
+	if migrationUID, ok := pod.Labels[LabelKubeVirtMigrationJobUID]; ok {
+		migrationUIDFromLabel = migrationUID
 	}
 
-	// Extract migration job UID (optional - only present on target pods during migration)
-	if migrationUID, ok := pod.Labels[LabelKubeVirtMigrationJobUID]; ok {
-		info.MigrationJobUID = migrationUID
+	// Verify migration UID if present in pod labels
+	// The migration UID in pod labels must match the VMI's migration state
+	if migrationUIDFromLabel != "" {
+		if vmiResource.MigrationUID == "" {
+			return nil, fmt.Errorf("pod %s/%s has migration UID label %s but VMI has no active migration",
+				pod.Namespace, pod.Name, migrationUIDFromLabel)
+		}
+		if vmiResource.MigrationUID != migrationUIDFromLabel {
+			return nil, fmt.Errorf("migration UID mismatch: pod label has %s but VMI migration state has %s",
+				migrationUIDFromLabel, vmiResource.MigrationUID)
+		}
+		// Also verify that this pod is the target pod for this migration
+		if vmiResource.MigrationTargetPod != pod.Name {
+			return nil, fmt.Errorf("pod %s claims to be migration target but VMI migration state shows target pod is %s",
+				pod.Name, vmiResource.MigrationTargetPod)
+		}
+	}
+
+	// Create PodVMIInfo with embedded VMIResource
+	info := &PodVMIInfo{
+		VMIResource:     vmiResource,
+		isVirtLauncher:  true,
+		MigrationJobUID: migrationUIDFromLabel,
 	}
 
 	return info, nil
@@ -236,14 +253,26 @@ func GetVMIResourceByUID(ctx context.Context, virtClient kubecli.KubevirtClient,
 				}
 			}
 
+			// Extract migration information if migration is in progress
+			migrationUID := ""
+			migrationTargetPod := ""
+			migrationSourcePod := ""
+			if vmi.Status.MigrationState != nil {
+				migrationUID = string(vmi.Status.MigrationState.MigrationUID)
+				migrationTargetPod = vmi.Status.MigrationState.TargetPod
+				migrationSourcePod = vmi.Status.MigrationState.SourcePod
+			}
+
 			// Found the VMI, populate VMIResource
 			return &VMIResource{
-				Name:              vmi.Name,
-				Namespace:         vmi.Namespace,
-				UID:               string(vmi.UID),
-				CreationTimestamp: vmi.CreationTimestamp,
-				DeletionTimestamp: vmi.DeletionTimestamp,
-				ActivePods:        activePods,
+				Name:               vmi.Name,
+				Namespace:          vmi.Namespace,
+				UID:                string(vmi.UID),
+				DeletionTimestamp:  vmi.DeletionTimestamp,
+				ActivePods:         activePods,
+				MigrationUID:       migrationUID,
+				MigrationTargetPod: migrationTargetPod,
+				MigrationSourcePod: migrationSourcePod,
 			}, nil
 		}
 	}
@@ -272,12 +301,24 @@ func GetVMIResourceByName(ctx context.Context, virtClient kubecli.KubevirtClient
 		}
 	}
 
+	// Extract migration information if migration is in progress
+	migrationUID := ""
+	migrationTargetPod := ""
+	migrationSourcePod := ""
+	if vmi.Status.MigrationState != nil {
+		migrationUID = string(vmi.Status.MigrationState.MigrationUID)
+		migrationTargetPod = vmi.Status.MigrationState.TargetPod
+		migrationSourcePod = vmi.Status.MigrationState.SourcePod
+	}
+
 	return &VMIResource{
-		Name:              vmi.Name,
-		Namespace:         vmi.Namespace,
-		UID:               string(vmi.UID),
-		CreationTimestamp: vmi.CreationTimestamp,
-		DeletionTimestamp: vmi.DeletionTimestamp,
-		ActivePods:        activePods,
+		Name:               vmi.Name,
+		Namespace:          vmi.Namespace,
+		UID:                string(vmi.UID),
+		DeletionTimestamp:  vmi.DeletionTimestamp,
+		ActivePods:         activePods,
+		MigrationUID:       migrationUID,
+		MigrationTargetPod: migrationTargetPod,
+		MigrationSourcePod: migrationSourcePod,
 	}, nil
 }
