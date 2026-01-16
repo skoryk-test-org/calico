@@ -18,6 +18,7 @@ package kubevirt
 import (
 	"fmt"
 
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"kubevirt.io/client-go/kubecli"
 )
@@ -25,6 +26,15 @@ import (
 // GetVirtClientFromConfig creates a KubeVirt client from a clientcmd.ClientConfig
 func GetVirtClientFromConfig(clientConfig clientcmd.ClientConfig) (kubecli.KubevirtClient, error) {
 	virtClient, err := kubecli.GetKubevirtClientFromClientConfig(clientConfig)
+	if err != nil {
+		return nil, fmt.Errorf("cannot obtain KubeVirt client: %w", err)
+	}
+	return virtClient, nil
+}
+
+// GetVirtClientFromRestConfig creates a KubeVirt client from a rest.Config
+func GetVirtClientFromRestConfig(restConfig *rest.Config) (kubecli.KubevirtClient, error) {
+	virtClient, err := kubecli.GetKubevirtClientFromRESTConfig(restConfig)
 	if err != nil {
 		return nil, fmt.Errorf("cannot obtain KubeVirt client: %w", err)
 	}

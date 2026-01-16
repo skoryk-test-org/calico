@@ -49,6 +49,8 @@ import (
 	cnet "github.com/projectcalico/calico/libcalico-go/lib/net"
 	"github.com/projectcalico/calico/libcalico-go/lib/options"
 	"github.com/projectcalico/calico/libcalico-go/lib/winutils"
+	"k8s.io/client-go/rest"
+	"kubevirt.io/client-go/kubecli"
 )
 
 // CmdAddK8s performs the "ADD" operation on a kubernetes pod
@@ -922,7 +924,9 @@ func parseIPAddrs(ipAddrsStr string, logger *logrus.Entry) ([]string, error) {
 	return ips, nil
 }
 
-func NewK8sClient(conf types.NetConf, logger *logrus.Entry) (*kubernetes.Clientset, error) {
+// getK8sRestConfig creates a Kubernetes REST config from the CNI network configuration.
+// This helper function builds the config with kubeconfig file and overrides from the network config.
+func getK8sRestConfig(conf types.NetConf) (*rest.Config, error) {
 	// Some config can be passed in a kubeconfig file
 	kubeconfig := conf.Kubernetes.Kubeconfig
 
@@ -958,15 +962,32 @@ func NewK8sClient(conf types.NetConf, logger *logrus.Entry) (*kubernetes.Clients
 	}
 
 	// Use the kubernetes client code to load the kubeconfig file and combine it with the overrides.
-	config, err := winutils.NewNonInteractiveDeferredLoadingClientConfig(
+	return winutils.NewNonInteractiveDeferredLoadingClientConfig(
 		&clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfig},
 		configOverrides)
+}
+
+func NewK8sClient(conf types.NetConf, logger *logrus.Entry) (*kubernetes.Clientset, error) {
+	// Get the Kubernetes REST config
+	config, err := getK8sRestConfig(conf)
 	if err != nil {
 		return nil, err
 	}
 
 	// Create the clientset
 	return kubernetes.NewForConfig(config)
+}
+
+// NewKubeVirtClient creates a KubeVirt client from the CNI network configuration.
+func NewKubeVirtClient(conf types.NetConf, logger *logrus.Entry) (kubecli.KubevirtClient, error) {
+	// Get the Kubernetes REST config
+	config, err := getK8sRestConfig(conf)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create KubeVirt client
+	return kubevirt.GetVirtClientFromRestConfig(config)
 }
 
 func getK8sNSInfo(client *kubernetes.Clientset, podNamespace string) (annotations map[string]string, err error) {
