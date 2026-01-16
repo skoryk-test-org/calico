@@ -210,7 +210,7 @@ func verifyVMIOwnership(pod *corev1.Pod, vmiUID string) error {
 //   - (nil, error) if there was an error querying the API or VMI not found
 func GetVMIResourceByUID(ctx context.Context, virtClient kubecli.KubevirtClient, namespace, vmiUID string) (*VMIResource, error) {
 	// List VMIs in the namespace
-	vmiList, err := virtClient.VirtualMachineInstance(namespace).List(ctx, &metav1.ListOptions{})
+	vmiList, err := virtClient.VirtualMachineInstance(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list VMIs in namespace %s: %w", namespace, err)
 	}
@@ -240,7 +240,7 @@ func GetVMIResourceByUID(ctx context.Context, virtClient kubecli.KubevirtClient,
 //   - (nil, error) if there was an error querying the API or VMI not found
 func GetVMIResourceByName(ctx context.Context, virtClient kubecli.KubevirtClient, namespace, vmiName string) (*VMIResource, error) {
 	// Get the VMI
-	vmi, err := virtClient.VirtualMachineInstance(namespace).Get(ctx, vmiName, &metav1.GetOptions{})
+	vmi, err := virtClient.VirtualMachineInstance(namespace).Get(ctx, vmiName, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get VMI %s in namespace %s: %w", vmiName, namespace, err)
 	}

@@ -88,13 +88,13 @@ require (
 	go.etcd.io/etcd/client/v2 v2.305.24
 	go.etcd.io/etcd/client/v3 v3.6.5
 	go.yaml.in/yaml/v3 v3.0.4
-	golang.org/x/crypto v0.43.0
+	golang.org/x/crypto v0.44.0
 	golang.org/x/mod v0.29.0
-	golang.org/x/net v0.46.0
+	golang.org/x/net v0.47.0
 	golang.org/x/oauth2 v0.32.0
-	golang.org/x/sync v0.17.0
-	golang.org/x/sys v0.37.0
-	golang.org/x/text v0.30.0
+	golang.org/x/sync v0.18.0
+	golang.org/x/sys v0.38.0
+	golang.org/x/text v0.31.0
 	golang.org/x/time v0.14.0
 	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20241231184526-a9ab2273dd10
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250818200422-3122310a409c
@@ -102,15 +102,15 @@ require (
 	google.golang.org/protobuf v1.36.10
 	gopkg.in/go-playground/validator.v9 v9.30.2
 	helm.sh/helm/v3 v3.19.0
-	k8s.io/api v0.34.1
-	k8s.io/apiextensions-apiserver v0.34.1
-	k8s.io/apimachinery v0.34.1
-	k8s.io/apiserver v0.34.1
+	k8s.io/api v0.34.2
+	k8s.io/apiextensions-apiserver v0.34.2
+	k8s.io/apimachinery v0.34.2
+	k8s.io/apiserver v0.34.2
 	k8s.io/client-go v12.0.0+incompatible
 	k8s.io/component-base v0.34.1
 	k8s.io/klog/v2 v2.130.1
 	k8s.io/kube-aggregator v0.34.1
-	k8s.io/kube-openapi v0.0.0-20250710124328-f3f2b991d03b
+	k8s.io/kube-openapi v0.31.0
 	k8s.io/kubernetes v1.34.1
 	k8s.io/utils v0.0.0-20250604170112-4c0f3b243397
 	modernc.org/memory v1.11.0
@@ -339,8 +339,8 @@ require (
 	go.uber.org/zap v1.27.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	golang.org/x/exp v0.0.0-20240719175910-8a7402abbf56 // indirect
-	golang.org/x/term v0.36.0 // indirect
-	golang.org/x/tools v0.37.0 // indirect
+	golang.org/x/term v0.37.0 // indirect
+	golang.org/x/tools v0.38.0 // indirect
 	golang.zx2c4.com/wireguard v0.0.0-20231211153847-12269c276173 // indirect
 	google.golang.org/api v0.247.0 // indirect
 	google.golang.org/genproto v0.0.0-20250603155806-513f23925822 // indirect
@@ -370,9 +370,20 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.0 // indirect
 )
 
+require kubevirt.io/client-go v1.8.0-alpha.0
+
 require (
-	kubevirt.io/api v1.2.0 // indirect
-	kubevirt.io/client-go v1.2.0 // indirect
+	github.com/go-kit/log v0.2.1 // indirect
+	github.com/go-logfmt/logfmt v0.6.0 // indirect
+	github.com/k8snetworkplumbingwg/network-attachment-definition-client v0.0.0-20191119172530-79f836b90111 // indirect
+	github.com/kubernetes-csi/external-snapshotter/client/v4 v4.2.0 // indirect
+	github.com/openshift/api v0.0.0-20230503133300-8bbcb7ca7183 // indirect
+	github.com/openshift/client-go v0.0.0-20210112165513-ebc401615f47 // indirect
+	github.com/openshift/custom-resource-status v1.1.2 // indirect
+	go.uber.org/mock v0.5.1 // indirect
+	kubevirt.io/api v1.8.0-alpha.0 // indirect
+	kubevirt.io/containerized-data-importer-api v1.63.1 // indirect
+	kubevirt.io/controller-lifecycle-operator-sdk/api v0.0.0-20220329064328-f3cc58c6ed90 // indirect
 )
 
 replace (
@@ -401,6 +412,9 @@ replace (
 	k8s.io/externaljwt => k8s.io/externaljwt v0.34.1
 	k8s.io/kube-aggregator => k8s.io/kube-aggregator v0.34.1
 	k8s.io/kube-controller-manager => k8s.io/kube-controller-manager v0.34.1
+
+	// KubeVirt requires a specific pseudo-version of kube-openapi
+	k8s.io/kube-openapi => k8s.io/kube-openapi v0.0.0-20250710124328-f3f2b991d03b
 	k8s.io/kube-proxy => k8s.io/kube-proxy v0.34.1
 	k8s.io/kube-scheduler => k8s.io/kube-scheduler v0.34.1
 	k8s.io/kubectl => k8s.io/kubectl v0.34.1
