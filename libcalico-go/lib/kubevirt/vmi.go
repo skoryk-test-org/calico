@@ -63,9 +63,11 @@ const (
 )
 
 // PodVMIInfo contains KubeVirt VMI-related information extracted from pod labels
+// and verified against the actual VMI resource via the Kubernetes API.
 type PodVMIInfo struct {
-	VMIName         string
-	VMIUID          string
+	*VMIResource // Embedded: Name, Namespace, UID, DeletionTimestamp, CreationTimestamp
+
+	// MigrationJobUID is only present on migration target pods
 	MigrationJobUID string
 
 	// isVirtLauncher indicates if this pod is a virt-launcher pod
@@ -101,12 +103,13 @@ func (v *VMIResource) GetDeletionGracePeriod() time.Duration {
 	return time.Since(v.DeletionTimestamp.Time)
 }
 
-// GetPodVMIInfo extracts VMI information from a pod's labels.
+// GetPodVMIInfo extracts VMI information from a pod's labels and verifies it against
+// the actual VMI resource via the Kubernetes API.
 // Returns:
-//   - (*PodVMIInfo, nil) if the pod is a valid virt-launcher pod with all required labels
+//   - (*PodVMIInfo, nil) if the pod is a valid virt-launcher pod with verified VMI
 //   - (nil, nil) if the pod is not a virt-launcher pod
-//   - (nil, error) if the pod is a virt-launcher pod but missing critical labels (VMIUID or VMIName)
-func GetPodVMIInfo(pod *corev1.Pod) (*PodVMIInfo, error) {
+//   - (nil, error) if verification fails or VMI query fails
+func GetPodVMIInfo(pod *corev1.Pod, virtClient kubecli.KubevirtClient) (*PodVMIInfo, error) {
 	if pod == nil || pod.Labels == nil {
 		return nil, nil
 	}
@@ -117,36 +120,53 @@ func GetPodVMIInfo(pod *corev1.Pod) (*PodVMIInfo, error) {
 		return nil, nil
 	}
 
-	info := &PodVMIInfo{
-		isVirtLauncher: true,
-	}
-
-	// Extract and validate VMI UID
-	if uid, ok := pod.Labels[LabelKubeVirtCreatedBy]; ok && uid != "" {
-		info.VMIUID = uid
-	} else {
+	// Extract VMI UID from labels
+	vmiUID, ok := pod.Labels[LabelKubeVirtCreatedBy]
+	if !ok || vmiUID == "" {
 		return nil, fmt.Errorf("virt-launcher pod %s/%s is missing required label %s",
 			pod.Namespace, pod.Name, LabelKubeVirtCreatedBy)
 	}
 
-	// Extract and validate VMI name
-	if name, ok := pod.Labels[LabelKubeVirtVMName]; ok && name != "" {
-		info.VMIName = name
-	} else {
+	// Extract VMI name from labels
+	vmiName, ok := pod.Labels[LabelKubeVirtVMName]
+	if !ok || vmiName == "" {
 		return nil, fmt.Errorf("virt-launcher pod %s/%s is missing required label %s",
 			pod.Namespace, pod.Name, LabelKubeVirtVMName)
+	}
+
+	// Verify VMI ownership via ownerReferences (quick check)
+	if err := verifyVMIOwnership(pod, vmiUID); err != nil {
+		return nil, fmt.Errorf("VMI ownership verification failed for pod %s/%s: %w",
+			pod.Namespace, pod.Name, err)
+	}
+
+	// Query the actual VMI resource to verify and get complete information
+	vmiResource, err := GetVMIResourceByName(
+		context.Background(),
+		virtClient,
+		pod.Namespace,
+		vmiName,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query VMI resource %s/%s: %w",
+			pod.Namespace, vmiName, err)
+	}
+
+	// Verify that the VMI UID from labels matches the actual VMI resource
+	if vmiResource.UID != vmiUID {
+		return nil, fmt.Errorf("VMI UID mismatch: pod labels have %s but VMI resource has %s",
+			vmiUID, vmiResource.UID)
+	}
+
+	// Create PodVMIInfo with embedded VMIResource
+	info := &PodVMIInfo{
+		VMIResource:    vmiResource,
+		isVirtLauncher: true,
 	}
 
 	// Extract migration job UID (optional - only present on target pods during migration)
 	if migrationUID, ok := pod.Labels[LabelKubeVirtMigrationJobUID]; ok {
 		info.MigrationJobUID = migrationUID
-	}
-
-	// Verify VMI ownership to prevent label spoofing
-	// Check if the pod has an ownerReference with matching VMI UID
-	if err := verifyVMIOwnership(pod, info.VMIUID); err != nil {
-		return nil, fmt.Errorf("VMI ownership verification failed for pod %s/%s: %w",
-			pod.Namespace, pod.Name, err)
 	}
 
 	return info, nil
@@ -163,14 +183,20 @@ func (v *PodVMIInfo) IsMigrationTarget() bool {
 	return v.MigrationJobUID != ""
 }
 
-// GetVMIName returns the VMI name
+// GetVMIName returns the VMI name (from embedded VMIResource)
 func (v *PodVMIInfo) GetVMIName() string {
-	return v.VMIName
+	if v.VMIResource == nil {
+		return ""
+	}
+	return v.VMIResource.Name
 }
 
-// GetVMIUID returns the VMI UID
+// GetVMIUID returns the VMI UID (from embedded VMIResource)
 func (v *PodVMIInfo) GetVMIUID() string {
-	return v.VMIUID
+	if v.VMIResource == nil {
+		return ""
+	}
+	return v.VMIResource.UID
 }
 
 // GetVMIMigrationUID returns the migration job UID.

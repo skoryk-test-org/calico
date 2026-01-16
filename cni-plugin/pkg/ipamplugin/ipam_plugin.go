@@ -34,7 +34,6 @@ import (
 	v3 "github.com/projectcalico/api/pkg/apis/projectcalico/v3"
 	"github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/projectcalico/calico/cni-plugin/internal/pkg/utils"
@@ -525,57 +524,35 @@ func getVMIInfoForPod(conf types.NetConf, epIDs *utils.WEPIdentifiers) (*kubevir
 		return nil, nil
 	}
 
-	// Try to get pod info to check for virt-launcher label
+	// Create Kubernetes client
 	k8sClient, err := k8s.NewK8sClient(conf, logrus.NewEntry(logrus.StandardLogger()))
 	if err != nil {
 		logrus.WithError(err).Error("Failed to create Kubernetes client for VMI detection")
 		return nil, err
 	}
 
+	// Get the pod
 	pod, err := k8sClient.CoreV1().Pods(epIDs.Namespace).Get(context.Background(), epIDs.Pod, metav1.GetOptions{})
 	if err != nil {
 		logrus.WithError(err).Error("Failed to get pod for VMI detection")
 		return nil, err
 	}
 
-	vmiInfo, err := kubevirt.GetPodVMIInfo(pod)
+	// Create KubeVirt client for VMI verification
+	virtClient, err := k8s.NewKubeVirtClient(conf, logrus.NewEntry(logrus.StandardLogger()))
+	if err != nil {
+		logrus.WithError(err).Error("Failed to create KubeVirt client for VMI detection")
+		return nil, err
+	}
+
+	// Get and verify VMI info (queries VMI resource for verification)
+	vmiInfo, err := kubevirt.GetPodVMIInfo(pod, virtClient)
 	if err != nil {
 		logrus.WithError(err).Error("Invalid virt-launcher pod configuration")
 		return nil, err
 	}
 
 	return vmiInfo, nil
-}
-
-// isVMIDeletionInProgress checks if the VMI has a deletion timestamp.
-// Returns true if the VMI is being deleted or doesn't exist, false otherwise.
-func isVMIDeletionInProgress(conf types.NetConf, namespace, vmiName string) (bool, error) {
-	// Create KubeVirt client
-	virtClient, err := k8s.NewKubeVirtClient(conf, logrus.WithFields(logrus.Fields{
-		"namespace": namespace,
-		"vmiName":   vmiName,
-	}))
-	if err != nil {
-		return false, fmt.Errorf("failed to create KubeVirt client: %w", err)
-	}
-
-	// Get VMI resource by name using the KubeVirt client
-	vmiResource, err := kubevirt.GetVMIResourceByName(
-		context.Background(),
-		virtClient,
-		namespace,
-		vmiName,
-	)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			// VMI doesn't exist, consider it as deletion in progress
-			return true, nil
-		}
-		return false, fmt.Errorf("failed to get VMI resource %s: %w", vmiName, err)
-	}
-
-	// Check if VMI deletion is in progress
-	return vmiResource.IsDeletionInProgress(), nil
 }
 
 func cmdDel(args *skel.CmdArgs) error {
@@ -613,26 +590,17 @@ func cmdDel(args *skel.CmdArgs) error {
 		return fmt.Errorf("failed to get VMI info: %w", err)
 	}
 
-	// Track if VMI deletion is in progress
-	vmiDeletionInProgress := false
-
 	if vmiInfo != nil {
 		// Use VMI-based handle ID
 		handleID = fmt.Sprintf("%s.vmi.%s", conf.Name, vmiInfo.GetVMIUID())
 
-		// Check if VMI has deletion timestamp (VMI is being deleted)
-		vmiDeletionInProgress, err = isVMIDeletionInProgress(conf, epIDs.Namespace, vmiInfo.GetVMIName())
-		if err != nil {
-			logrus.WithError(err).Warn("Failed to check VMI deletion status, assuming VMI deletion in progress")
-			vmiDeletionInProgress = true
-		}
-
+		// VMI deletion status is already available from embedded VMIResource
 		logrus.WithFields(logrus.Fields{
 			"pod":                   epIDs.Pod,
 			"namespace":             epIDs.Namespace,
 			"vmiName":               vmiInfo.GetVMIName(),
 			"vmiUID":                vmiInfo.GetVMIUID(),
-			"vmiDeletionInProgress": vmiDeletionInProgress,
+			"vmiDeletionInProgress": vmiInfo.IsDeletionInProgress(),
 			"handleID":              handleID,
 		}).Info("Detected KubeVirt virt-launcher pod deletion")
 	}
@@ -657,7 +625,8 @@ func cmdDel(args *skel.CmdArgs) error {
 
 	// For VMI pods, handle deletion based on VMI status
 	if vmiInfo != nil {
-		if vmiDeletionInProgress {
+		// Check deletion status from embedded VMIResource
+		if vmiInfo.IsDeletionInProgress() {
 			// VMI is being deleted - release the IP completely
 			logger.Info("VMI deletion in progress - releasing IP by handle")
 			if err := calicoClient.IPAM().ReleaseByHandle(ctx, handleID); err != nil {
