@@ -87,6 +87,9 @@ type VMIResource struct {
 	DeletionTimestamp *metav1.Time
 	// CreationTimestamp is when the VMI was created
 	CreationTimestamp metav1.Time
+	// ActivePods is a mapping of pod UID to node name
+	// Multiple pods can be active during migration (source and target)
+	ActivePods map[string]string
 }
 
 // IsDeletionInProgress returns true if the VMI has a deletion timestamp set
@@ -134,12 +137,6 @@ func GetPodVMIInfo(pod *corev1.Pod, virtClient kubecli.KubevirtClient) (*PodVMII
 			pod.Namespace, pod.Name, LabelKubeVirtVMName)
 	}
 
-	// Verify VMI ownership via ownerReferences (quick check)
-	if err := verifyVMIOwnership(pod, vmiUID); err != nil {
-		return nil, fmt.Errorf("VMI ownership verification failed for pod %s/%s: %w",
-			pod.Namespace, pod.Name, err)
-	}
-
 	// Query the actual VMI resource to verify and get complete information
 	vmiResource, err := GetVMIResourceByName(
 		context.Background(),
@@ -156,6 +153,14 @@ func GetPodVMIInfo(pod *corev1.Pod, virtClient kubecli.KubevirtClient) (*PodVMII
 	if vmiResource.UID != vmiUID {
 		return nil, fmt.Errorf("VMI UID mismatch: pod labels have %s but VMI resource has %s",
 			vmiUID, vmiResource.UID)
+	}
+
+	// Verify that this pod is listed in VMI's ActivePods (authoritative source)
+	// This prevents label spoofing - the VMI must acknowledge this pod
+	podUIDStr := string(pod.UID)
+	if _, exists := vmiResource.ActivePods[podUIDStr]; !exists {
+		return nil, fmt.Errorf("pod %s/%s (UID: %s) is not in VMI's ActivePods list - possible label spoofing",
+			pod.Namespace, pod.Name, podUIDStr)
 	}
 
 	// Create PodVMIInfo with embedded VMIResource
@@ -208,27 +213,6 @@ func (v *PodVMIInfo) GetVMIMigrationUID() string {
 // verifyVMIOwnership validates that the pod is actually owned by the VMI with the given UID.
 // This prevents users from spoofing virt-launcher behavior by adding labels to normal pods.
 // KubeVirt sets the VirtualMachineInstance as the controller owner of virt-launcher pods.
-func verifyVMIOwnership(pod *corev1.Pod, vmiUID string) error {
-	if pod.OwnerReferences == nil || len(pod.OwnerReferences) == 0 {
-		return fmt.Errorf("virt-launcher pod has no owner references")
-	}
-
-	// Look for a VirtualMachineInstance owner with matching UID
-	for _, owner := range pod.OwnerReferences {
-		if owner.Kind == "VirtualMachineInstance" {
-			if string(owner.UID) == vmiUID {
-				// Found matching VMI owner - verification successful
-				return nil
-			}
-			// Found VMI owner but UID doesn't match - this is suspicious
-			return fmt.Errorf("VMI UID mismatch: label has %s but owner reference has %s", vmiUID, owner.UID)
-		}
-	}
-
-	// No VirtualMachineInstance owner found
-	return fmt.Errorf("no VirtualMachineInstance owner reference found (VMI UID from label: %s)", vmiUID)
-}
-
 // GetVMIResourceByUID queries the Kubernetes API for a VirtualMachineInstance with the given UID
 // and returns a VMIResource containing its metadata.
 // Returns:
@@ -244,6 +228,14 @@ func GetVMIResourceByUID(ctx context.Context, virtClient kubecli.KubevirtClient,
 	// Find the VMI with matching UID
 	for _, vmi := range vmiList.Items {
 		if string(vmi.UID) == vmiUID {
+			// Convert ActivePods from map[types.UID]string to map[string]string
+			activePods := make(map[string]string)
+			if vmi.Status.ActivePods != nil {
+				for podUID, nodeName := range vmi.Status.ActivePods {
+					activePods[string(podUID)] = nodeName
+				}
+			}
+
 			// Found the VMI, populate VMIResource
 			return &VMIResource{
 				Name:              vmi.Name,
@@ -251,6 +243,7 @@ func GetVMIResourceByUID(ctx context.Context, virtClient kubecli.KubevirtClient,
 				UID:               string(vmi.UID),
 				CreationTimestamp: vmi.CreationTimestamp,
 				DeletionTimestamp: vmi.DeletionTimestamp,
+				ActivePods:        activePods,
 			}, nil
 		}
 	}
@@ -271,11 +264,20 @@ func GetVMIResourceByName(ctx context.Context, virtClient kubecli.KubevirtClient
 		return nil, fmt.Errorf("failed to get VMI %s in namespace %s: %w", vmiName, namespace, err)
 	}
 
+	// Convert ActivePods from map[types.UID]string to map[string]string
+	activePods := make(map[string]string)
+	if vmi.Status.ActivePods != nil {
+		for podUID, nodeName := range vmi.Status.ActivePods {
+			activePods[string(podUID)] = nodeName
+		}
+	}
+
 	return &VMIResource{
 		Name:              vmi.Name,
 		Namespace:         vmi.Namespace,
 		UID:               string(vmi.UID),
 		CreationTimestamp: vmi.CreationTimestamp,
 		DeletionTimestamp: vmi.DeletionTimestamp,
+		ActivePods:        activePods,
 	}, nil
 }
