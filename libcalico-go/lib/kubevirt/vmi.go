@@ -51,6 +51,36 @@ import (
 	"kubevirt.io/client-go/kubecli"
 )
 
+// VirtClientInterface defines the minimal KubeVirt client interface needed for VMI operations.
+// This interface allows for easy mocking and testing without requiring a real KubeVirt cluster.
+type VirtClientInterface interface {
+	// VirtualMachineInstance returns an interface for VirtualMachineInstance operations in the given namespace.
+	VirtualMachineInstance(namespace string) VMIInterface
+}
+
+// VMIInterface defines the VirtualMachineInstance operations we need.
+type VMIInterface interface {
+	// Get retrieves a VirtualMachineInstance by name.
+	Get(ctx context.Context, name string, options metav1.GetOptions) (*kubevirtv1.VirtualMachineInstance, error)
+	// List retrieves all VirtualMachineInstances in the namespace.
+	List(ctx context.Context, options metav1.ListOptions) (*kubevirtv1.VirtualMachineInstanceList, error)
+}
+
+// virtClientAdapter adapts the real kubecli.KubevirtClient to our VirtClientInterface.
+type virtClientAdapter struct {
+	client kubecli.KubevirtClient
+}
+
+// NewVirtClientAdapter wraps a real KubeVirt client with our interface.
+func NewVirtClientAdapter(client kubecli.KubevirtClient) VirtClientInterface {
+	return &virtClientAdapter{client: client}
+}
+
+// VirtualMachineInstance implements VirtClientInterface.
+func (v *virtClientAdapter) VirtualMachineInstance(namespace string) VMIInterface {
+	return v.client.VirtualMachineInstance(namespace)
+}
+
 // KubeVirt label keys
 const (
 	// LabelKubeVirtMigrationJobUID is only present on migration target pods
@@ -112,7 +142,7 @@ func (v *VMIResource) IsDeletionInProgress() bool {
 //   - (*PodVMIInfo, nil) if the pod is a valid virt-launcher pod with verified VMI
 //   - (nil, nil) if the pod is not owned by a VMI (not a virt-launcher pod)
 //   - (nil, error) if verification fails or VMI query fails
-func GetPodVMIInfo(pod *corev1.Pod, virtClient kubecli.KubevirtClient) (*PodVMIInfo, error) {
+func GetPodVMIInfo(pod *corev1.Pod, virtClient VirtClientInterface) (*PodVMIInfo, error) {
 	if pod == nil {
 		return nil, nil
 	}
@@ -222,7 +252,7 @@ func (v *PodVMIInfo) GetVMIMigrationUID() string {
 // Returns:
 //   - (*VMIResource, nil) if the VMI is found
 //   - (nil, error) if there was an error querying the API or VMI not found
-func GetVMIResourceByUID(ctx context.Context, virtClient kubecli.KubevirtClient, namespace, vmiUID string) (*VMIResource, error) {
+func GetVMIResourceByUID(ctx context.Context, virtClient VirtClientInterface, namespace, vmiUID string) (*VMIResource, error) {
 	// List VMIs in the namespace
 	vmiList, err := virtClient.VirtualMachineInstance(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -273,7 +303,7 @@ func GetVMIResourceByUID(ctx context.Context, virtClient kubecli.KubevirtClient,
 // Returns:
 //   - (*VMIResource, nil) if the VMI is found
 //   - (nil, error) if there was an error querying the API or VMI not found
-func GetVMIResourceByName(ctx context.Context, virtClient kubecli.KubevirtClient, namespace, vmiName string) (*VMIResource, error) {
+func GetVMIResourceByName(ctx context.Context, virtClient VirtClientInterface, namespace, vmiName string) (*VMIResource, error) {
 	// Get the VMI
 	vmi, err := virtClient.VirtualMachineInstance(namespace).Get(ctx, vmiName, metav1.GetOptions{})
 	if err != nil {

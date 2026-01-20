@@ -50,7 +50,6 @@ import (
 	"github.com/projectcalico/calico/libcalico-go/lib/options"
 	"github.com/projectcalico/calico/libcalico-go/lib/winutils"
 	"k8s.io/client-go/rest"
-	"kubevirt.io/client-go/kubecli"
 )
 
 // CmdAddK8s performs the "ADD" operation on a kubernetes pod
@@ -982,7 +981,7 @@ func NewK8sClient(conf types.NetConf, logger *logrus.Entry) (*kubernetes.Clients
 }
 
 // NewKubeVirtClient creates a KubeVirt client from the CNI network configuration.
-func NewKubeVirtClient(conf types.NetConf, logger *logrus.Entry) (kubecli.KubevirtClient, error) {
+func NewKubeVirtClient(conf types.NetConf, logger *logrus.Entry) (kubevirt.VirtClientInterface, error) {
 	// Get the Kubernetes REST config
 	config, err := getK8sRestConfig(conf)
 	if err != nil {
@@ -990,7 +989,13 @@ func NewKubeVirtClient(conf types.NetConf, logger *logrus.Entry) (kubecli.Kubevi
 	}
 
 	// Create KubeVirt client
-	return kubevirt.GetVirtClientFromRestConfig(config)
+	realClient, err := kubevirt.GetVirtClientFromRestConfig(config)
+	if err != nil {
+		return nil, err
+	}
+
+	// Wrap with our interface adapter
+	return kubevirt.NewVirtClientAdapter(realClient), nil
 }
 
 func getK8sNSInfo(client *kubernetes.Clientset, podNamespace string) (annotations map[string]string, err error) {
