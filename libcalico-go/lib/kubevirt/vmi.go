@@ -14,20 +14,29 @@
 
 // This file provides utilities for working with KubeVirt VirtualMachineInstance (VMI) pods.
 //
-// KubeVirt virt-launcher pods contain labels that identify the VMI and track live migration state.
-// Example pod labels for a virt-launcher pod:
+// KubeVirt virt-launcher pods are identified by their ownerReferences, which contain a
+// reference to the VirtualMachineInstance that owns the pod. This is the Kubernetes-native
+// and most reliable way to determine VMI ownership.
+//
+// Example pod ownerReferences for a virt-launcher pod:
+//
+//	ownerReferences:
+//	  - apiVersion: kubevirt.io/v1
+//	    kind: VirtualMachineInstance
+//	    name: vm1
+//	    uid: d2ad3ee8-1082-4d61-8202-dbc2432cdd88  # VMI UID
+//	    controller: true
+//
+// During live migration, migration target pods have an additional label:
 //
 //	labels:
-//	  kubevirt.io: virt-launcher
-//	  kubevirt.io/created-by: d2ad3ee8-1082-4d61-8202-dbc2432cdd88  # VMI UID
-//	  kubevirt.io/migrationJobUID: 122eae59-b197-42c1-a58d-67248f8e5be9  # <--- ONLY ON TARGET POD
-//	  vm.kubevirt.io/name: vm1
+//	  kubevirt.io/migrationJobUID: 122eae59-b197-42c1-a58d-67248f8e5be9  # ONLY ON TARGET POD
 //
-// During live migration:
-//   - Source pod: Has kubevirt.io/created-by (VMI UID), does NOT have migrationJobUID
-//   - Target pod: Has both kubevirt.io/created-by (same VMI UID) AND migrationJobUID
+// Migration scenario:
+//   - Source pod: Owned by VMI (via ownerReferences), does NOT have migrationJobUID label
+//   - Target pod: Owned by same VMI (via ownerReferences), HAS migrationJobUID label
 //
-// The VMI UID (kubevirt.io/created-by) remains stable across pod recreations and migrations,
+// The VMI UID from ownerReferences remains stable across pod recreations and migrations,
 // making it suitable as a basis for IPAM handle IDs to ensure IP address persistence.
 package kubevirt
 
@@ -38,38 +47,31 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	kubevirtv1 "kubevirt.io/api/core/v1"
 	"kubevirt.io/client-go/kubecli"
 )
 
 // KubeVirt label keys
 const (
-	// LabelKubeVirt is the label that identifies a virt-launcher pod
-	LabelKubeVirt = "kubevirt.io"
-	// LabelKubeVirtCreatedBy contains the VMI UID
-	LabelKubeVirtCreatedBy = "kubevirt.io/created-by"
 	// LabelKubeVirtMigrationJobUID is only present on migration target pods
-	LabelKubeVirtMigrationJobUID = "kubevirt.io/migrationJobUID"
-	// LabelKubeVirtVMName contains the VM/VMI name
-	LabelKubeVirtVMName = "vm.kubevirt.io/name"
-
-	// ValueVirtLauncher is the value of LabelKubeVirt for virt-launcher pods
-	ValueVirtLauncher = "virt-launcher"
+	// Value from kubevirtv1.MigrationJobLabel
+	LabelKubeVirtMigrationJobUID = kubevirtv1.MigrationJobLabel
 
 	// VMI API Group, Version, and Resource for dynamic client
-	VMIGroup        = "kubevirt.io"
-	VMIVersion      = "v1"
-	VMIResourceName = "virtualmachineinstances"
+	VMIGroup   = "kubevirt.io"
+	VMIVersion = "v1"
 )
 
-// PodVMIInfo contains KubeVirt VMI-related information extracted from pod labels
-// and verified against the actual VMI resource via the Kubernetes API.
+// PodVMIInfo contains KubeVirt VMI-related information extracted from a pod's
+// ownerReferences and verified against the actual VMI resource via the Kubernetes API.
 type PodVMIInfo struct {
 	*VMIResource // Embedded: Name, Namespace, UID, DeletionTimestamp, CreationTimestamp
 
 	// MigrationJobUID is only present on migration target pods
+	// (extracted from the kubevirt.io/migrationJobUID label)
 	MigrationJobUID string
 
-	// isVirtLauncher indicates if this pod is a virt-launcher pod
+	// isVirtLauncher indicates if this pod is owned by a VMI (virt-launcher pod)
 	isVirtLauncher bool
 }
 
@@ -103,35 +105,43 @@ func (v *VMIResource) IsDeletionInProgress() bool {
 	return v.DeletionTimestamp != nil && !v.DeletionTimestamp.IsZero()
 }
 
-// GetPodVMIInfo extracts VMI information from a pod's labels and verifies it against
-// the actual VMI resource via the Kubernetes API.
+// GetPodVMIInfo determines if a pod is a KubeVirt virt-launcher pod by checking its
+// ownerReferences for a VirtualMachineInstance owner, then verifies it against the
+// actual VMI resource via the Kubernetes API.
 // Returns:
 //   - (*PodVMIInfo, nil) if the pod is a valid virt-launcher pod with verified VMI
-//   - (nil, nil) if the pod is not a virt-launcher pod
+//   - (nil, nil) if the pod is not owned by a VMI (not a virt-launcher pod)
 //   - (nil, error) if verification fails or VMI query fails
 func GetPodVMIInfo(pod *corev1.Pod, virtClient kubecli.KubevirtClient) (*PodVMIInfo, error) {
-	if pod == nil || pod.Labels == nil {
+	if pod == nil {
 		return nil, nil
 	}
 
-	// Check if this is a virt-launcher pod
-	if pod.Labels[LabelKubeVirt] != ValueVirtLauncher {
-		// Not a virt-launcher pod
+	// Check ownerReferences to find VMI owner
+	// KubeVirt sets the VirtualMachineInstance as the controller owner of virt-launcher pods
+	var vmiOwner *metav1.OwnerReference
+	for i := range pod.OwnerReferences {
+		owner := &pod.OwnerReferences[i]
+		if owner.APIVersion == VMIGroup+"/"+VMIVersion &&
+			owner.Kind == "VirtualMachineInstance" &&
+			owner.Controller != nil && *owner.Controller {
+			vmiOwner = owner
+			break
+		}
+	}
+
+	if vmiOwner == nil {
+		// Not a virt-launcher pod (no VMI owner)
 		return nil, nil
 	}
 
-	// Extract VMI UID from labels
-	vmiUID, ok := pod.Labels[LabelKubeVirtCreatedBy]
-	if !ok || vmiUID == "" {
-		return nil, fmt.Errorf("virt-launcher pod %s/%s is missing required label %s",
-			pod.Namespace, pod.Name, LabelKubeVirtCreatedBy)
-	}
+	// Extract VMI name and UID from ownerReference
+	vmiName := vmiOwner.Name
+	vmiUID := string(vmiOwner.UID)
 
-	// Extract VMI name from labels
-	vmiName, ok := pod.Labels[LabelKubeVirtVMName]
-	if !ok || vmiName == "" {
-		return nil, fmt.Errorf("virt-launcher pod %s/%s is missing required label %s",
-			pod.Namespace, pod.Name, LabelKubeVirtVMName)
+	if vmiName == "" || vmiUID == "" {
+		return nil, fmt.Errorf("pod %s/%s has invalid VMI ownerReference: name=%q uid=%q",
+			pod.Namespace, pod.Name, vmiName, vmiUID)
 	}
 
 	// Query the actual VMI resource to verify and get complete information
@@ -146,41 +156,18 @@ func GetPodVMIInfo(pod *corev1.Pod, virtClient kubecli.KubevirtClient) (*PodVMII
 			pod.Namespace, vmiName, err)
 	}
 
-	// Verify that the VMI UID from labels matches the actual VMI resource
+	// Verify that the VMI UID from ownerReference matches the actual VMI resource
 	if vmiResource.UID != vmiUID {
-		return nil, fmt.Errorf("VMI UID mismatch: pod labels have %s but VMI resource has %s",
+		return nil, fmt.Errorf("VMI UID mismatch: pod ownerReference has %s but VMI resource has %s",
 			vmiUID, vmiResource.UID)
 	}
 
-	// Verify that this pod is listed in VMI's ActivePods (authoritative source)
-	// This prevents label spoofing - the VMI must acknowledge this pod
-	podUIDStr := string(pod.UID)
-	if _, exists := vmiResource.ActivePods[podUIDStr]; !exists {
-		return nil, fmt.Errorf("pod %s/%s (UID: %s) is not in VMI's ActivePods list - possible label spoofing",
-			pod.Namespace, pod.Name, podUIDStr)
-	}
-
-	// Extract migration job UID from pod labels (optional - only present on target pods during migration)
+	// Check for migration target label (only label we trust for migration state)
+	// This label is only present on migration target pods during live migration
 	migrationUIDFromLabel := ""
-	if migrationUID, ok := pod.Labels[LabelKubeVirtMigrationJobUID]; ok {
-		migrationUIDFromLabel = migrationUID
-	}
-
-	// Verify migration UID if present in pod labels
-	// The migration UID in pod labels must match the VMI's migration state
-	if migrationUIDFromLabel != "" {
-		if vmiResource.MigrationUID == "" {
-			return nil, fmt.Errorf("pod %s/%s has migration UID label %s but VMI has no active migration",
-				pod.Namespace, pod.Name, migrationUIDFromLabel)
-		}
-		if vmiResource.MigrationUID != migrationUIDFromLabel {
-			return nil, fmt.Errorf("migration UID mismatch: pod label has %s but VMI migration state has %s",
-				migrationUIDFromLabel, vmiResource.MigrationUID)
-		}
-		// Also verify that this pod is the target pod for this migration
-		if vmiResource.MigrationTargetPod != pod.Name {
-			return nil, fmt.Errorf("pod %s claims to be migration target but VMI migration state shows target pod is %s",
-				pod.Name, vmiResource.MigrationTargetPod)
+	if pod.Labels != nil {
+		if migrationUID, ok := pod.Labels[LabelKubeVirtMigrationJobUID]; ok {
+			migrationUIDFromLabel = migrationUID
 		}
 	}
 
