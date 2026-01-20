@@ -346,7 +346,7 @@ func ensureHostTunnelAddress(ctx context.Context, c client.Interface, node *liba
 		}
 
 		// Check if we got correct assignment attributes.
-		attr, handle, err := c.IPAM().GetAssignmentAttributes(ctx, net.IP{IP: ipAddr})
+		attr, handle, err := c.IPAM().GetAssignmentAttributes(ctx, net.IP{IP: ipAddr}, ipam.OwnerAttributeTypeActive)
 		if err == nil {
 			if attr[ipam.AttributeType] == attrType && attr[ipam.AttributeNode] == node.Name {
 				// The tunnel address is still assigned to this node, but is it in the correct pool this time?
@@ -643,7 +643,7 @@ func removeHostTunnelAddr(ctx context.Context, c client.Interface, node *libapi.
 			// belongs to us. If it has no handle and no attributes, then we can pretty confidently
 			// say that it belongs to us rather than a pod and should be cleaned up.
 			logCtx.WithField("handle", handle).Info("No IPs with handle, release exact IP")
-			attr, storedHandle, err := c.IPAM().GetAssignmentAttributes(ctx, *ipAddr)
+			attr, storedHandle, err := c.IPAM().GetAssignmentAttributes(ctx, *ipAddr, ipam.OwnerAttributeTypeActive)
 			if err != nil {
 				if _, ok := err.(cerrors.ErrorResourceDoesNotExist); !ok {
 					logCtx.WithError(err).Error("Failed to query attributes")

@@ -640,9 +640,37 @@ func cmdDel(args *skel.CmdArgs) error {
 			}
 		} else {
 			// VMI still exists - pod is being recreated or migration is happening
-			// TODO: Remove pod-specific attributes from IPAM block without releasing IP
-			// For now, just log that we're skipping release
-			logger.Info("VMI still exists - skipping IP release (IP will be reused by new pod)")
+			// Clear pod-specific attributes from IPAM block without releasing IP
+			logger.Info("VMI still exists - clearing attributes without releasing IP")
+
+			// Get IPs allocated to this handle so we can clear their attributes
+			ips, err := calicoClient.IPAM().IPsByHandle(ctx, handleID)
+			if err != nil {
+				logger.WithError(err).Warn("Failed to get IPs by handle")
+				return nil // Don't fail CNI deletion if we can't clear attributes
+			}
+
+			// Try to clear both Active and Alternate attributes for safety
+			// We don't know which one contains this pod's data
+			for _, ip := range ips {
+				logger.WithField("ip", ip).Info("Attempting to clear pod attributes")
+
+				// Try to clear ActiveOwnerAttrs first
+				if err := calicoClient.IPAM().ClearAttribute(ctx, ip, handleID, ipam.OwnerAttributeTypeActive); err != nil {
+					logger.WithError(err).WithField("ip", ip).Warn("Failed to clear ActiveOwnerAttrs")
+				} else {
+					logger.WithField("ip", ip).Info("Successfully cleared ActiveOwnerAttrs")
+				}
+
+				// Also try to clear AlternateOwnerAttrs
+				if err := calicoClient.IPAM().ClearAttribute(ctx, ip, handleID, ipam.OwnerAttributeTypeAlternate); err != nil {
+					logger.WithError(err).WithField("ip", ip).Debug("Failed to clear AlternateOwnerAttrs (may not exist)")
+				} else {
+					logger.WithField("ip", ip).Info("Successfully cleared AlternateOwnerAttrs")
+				}
+			}
+
+			logger.Info("Completed attribute cleanup - IP remains allocated to VMI")
 		}
 		return nil
 	}

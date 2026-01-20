@@ -145,7 +145,7 @@ func showBorrowedDetails(ctx context.Context, ippoolClient clientv3.IPPoolInterf
 
 func showIP(ctx context.Context, ipamClient ipam.Interface, passedIP interface{}) error {
 	ip := argutils.ValidateIP(passedIP.(string))
-	attr, _, err := ipamClient.GetAssignmentAttributes(ctx, ip)
+	attr, _, err := ipamClient.GetAssignmentAttributes(ctx, ip, ipam.OwnerAttributeTypeActive)
 	if err != nil {
 		if _, ok := err.(cerrors.ErrorResourceDoesNotExist); ok {
 			// IP address is not assigned.  The detailed error message here is either

@@ -44,8 +44,9 @@ type Interface interface {
 	ReleaseIPs(ctx context.Context, ips ...ReleaseOptions) ([]cnet.IP, []ReleaseOptions, error)
 
 	// GetAssignmentAttributes returns the attributes stored with the given IP address
-	// upon assignment, as well as the handle used for assignment (if any).
-	GetAssignmentAttributes(ctx context.Context, addr cnet.IP) (map[string]string, *string, error)
+	// for the specified owner type (Active or Alternate), as well as the handle used
+	// for assignment (if any).
+	GetAssignmentAttributes(ctx context.Context, addr cnet.IP, attrType OwnerAttributeType) (map[string]string, *string, error)
 
 	// IPsByHandle returns a list of all IP addresses that have been
 	// assigned using the provided handle.
@@ -109,4 +110,14 @@ type Interface interface {
 	// UpgradeHost checks the resources related to the given node and, if it
 	// finds any that are in older formats, upgrades them.  It is idempotent.
 	UpgradeHost(ctx context.Context, nodeName string) error
+
+	// ClearAttribute clears the specified attribute (Active or Alternate) for an IP
+	// without releasing the IP itself. This is used for VMI live migration scenarios
+	// where a pod is deleted but the IP should remain allocated to the VMI handle.
+	ClearAttribute(ctx context.Context, ip cnet.IP, handleID string, attrType OwnerAttributeType) error
+
+	// SwapAttributes swaps ActiveOwnerAttrs and AlternateOwnerAttrs for an IP.
+	// This is used during VMI migration completion to transfer ownership from the
+	// source pod to the target pod.
+	SwapAttributes(ctx context.Context, ip cnet.IP, handleID string) error
 }

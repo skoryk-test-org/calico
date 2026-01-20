@@ -2055,8 +2055,9 @@ func (c ipamClient) decrementHandle(ctx context.Context, handleID string, blockC
 }
 
 // GetAssignmentAttributes returns the attributes stored with the given IP address
-// upon assignment, as well as the handle used for assignment (if any).
-func (c ipamClient) GetAssignmentAttributes(ctx context.Context, addr net.IP) (map[string]string, *string, error) {
+// for the specified owner type (Active or Alternate), as well as the handle used
+// for assignment (if any).
+func (c ipamClient) GetAssignmentAttributes(ctx context.Context, addr net.IP, attrType OwnerAttributeType) (map[string]string, *string, error) {
 	pool, err := c.blockReaderWriter.getPoolForIP(ctx, addr, nil)
 	if err != nil {
 		return nil, nil, err
@@ -2072,7 +2073,7 @@ func (c ipamClient) GetAssignmentAttributes(ctx context.Context, addr net.IP) (m
 		return nil, nil, err
 	}
 	block := allocationBlock{obj.Value.(*model.AllocationBlock)}
-	attrs, err := block.attributesForIP(addr)
+	attrs, err := block.attributesForIP(addr, attrType)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -498,7 +498,7 @@ func (b allocationBlock) ipsByHandle(handleID string) []cnet.IP {
 	return ips
 }
 
-func (b allocationBlock) attributesForIP(ip cnet.IP) (map[string]string, error) {
+func (b allocationBlock) attributesForIP(ip cnet.IP, attrType OwnerAttributeType) (map[string]string, error) {
 	// Convert to an ordinal.
 	ordinal, err := b.IPToOrdinal(ip)
 	if err != nil {
@@ -511,7 +511,16 @@ func (b allocationBlock) attributesForIP(ip cnet.IP) (map[string]string, error) 
 		log.Debugf("IP %s is not currently assigned in block", ip)
 		return nil, cerrors.ErrorResourceDoesNotExist{Identifier: ip.String(), Err: errors.New("IP is unassigned")}
 	}
-	return b.Attributes[*attrIndex].ActiveOwnerAttrs, nil
+
+	// Return the requested attribute type.
+	switch attrType {
+	case OwnerAttributeTypeActive:
+		return b.Attributes[*attrIndex].ActiveOwnerAttrs, nil
+	case OwnerAttributeTypeAlternate:
+		return b.Attributes[*attrIndex].AlternateOwnerAttrs, nil
+	default:
+		return nil, fmt.Errorf("unknown attribute type: %s", attrType)
+	}
 }
 
 func (b allocationBlock) handleForIP(ip cnet.IP) (*string, error) {
@@ -598,4 +607,84 @@ func intInSlice(searchInt int, slice []int) bool {
 		}
 	}
 	return false
+}
+
+// clearAttribute clears the specified attribute for an IP address without releasing it.
+func (b *allocationBlock) clearAttribute(ip cnet.IP, handleID string, attrType OwnerAttributeType) error {
+	logCtx := log.WithFields(log.Fields{"ip": ip, "handleID": handleID, "attrType": attrType})
+
+	// Convert to an ordinal.
+	ordinal, err := b.IPToOrdinal(ip)
+	if err != nil {
+		return err
+	}
+
+	// Check if allocated.
+	attrIndex := b.Allocations[ordinal]
+	if attrIndex == nil {
+		logCtx.Debug("IP is not currently assigned in block")
+		return cerrors.ErrorResourceDoesNotExist{Identifier: ip.String(), Err: errors.New("IP is unassigned")}
+	}
+
+	// Get the attribute for this IP.
+	attr := &b.Attributes[*attrIndex]
+
+	// Verify the handle matches.
+	if attr.HandleID == nil || sanitizeHandle(*attr.HandleID) != handleID {
+		return fmt.Errorf("IP %s is not assigned to handle %s", ip, handleID)
+	}
+
+	// Clear the requested attribute.
+	switch attrType {
+	case OwnerAttributeTypeActive:
+		logCtx.Info("Clearing ActiveOwnerAttrs")
+		attr.ActiveOwnerAttrs = nil
+	case OwnerAttributeTypeAlternate:
+		logCtx.Info("Clearing AlternateOwnerAttrs")
+		attr.AlternateOwnerAttrs = nil
+	default:
+		return fmt.Errorf("unknown attribute type: %s", attrType)
+	}
+
+	return nil
+}
+
+// swapAttributes swaps the ActiveOwnerAttrs and AlternateOwnerAttrs for an IP address.
+func (b *allocationBlock) swapAttributes(ip cnet.IP, handleID string) error {
+	logCtx := log.WithFields(log.Fields{"ip": ip, "handleID": handleID})
+
+	// Convert to an ordinal.
+	ordinal, err := b.IPToOrdinal(ip)
+	if err != nil {
+		return err
+	}
+
+	// Check if allocated.
+	attrIndex := b.Allocations[ordinal]
+	if attrIndex == nil {
+		logCtx.Debug("IP is not currently assigned in block")
+		return cerrors.ErrorResourceDoesNotExist{Identifier: ip.String(), Err: errors.New("IP is unassigned")}
+	}
+
+	// Get the attribute for this IP.
+	attr := &b.Attributes[*attrIndex]
+
+	// Verify the handle matches.
+	if attr.HandleID == nil || sanitizeHandle(*attr.HandleID) != handleID {
+		return fmt.Errorf("IP %s is not assigned to handle %s", ip, handleID)
+	}
+
+	// Verify we have both attributes to swap.
+	if attr.AlternateOwnerAttrs == nil || len(attr.AlternateOwnerAttrs) == 0 {
+		return fmt.Errorf("cannot swap attributes: AlternateOwnerAttrs is empty")
+	}
+
+	logCtx.Info("Swapping ActiveOwnerAttrs and AlternateOwnerAttrs")
+
+	// Perform the swap.
+	oldActive := attr.ActiveOwnerAttrs
+	attr.ActiveOwnerAttrs = attr.AlternateOwnerAttrs
+	attr.AlternateOwnerAttrs = oldActive
+
+	return nil
 }
