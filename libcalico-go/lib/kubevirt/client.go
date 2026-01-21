@@ -40,3 +40,23 @@ func GetVirtClientFromRestConfig(restConfig *rest.Config) (kubecli.KubevirtClien
 	}
 	return virtClient, nil
 }
+
+// virtClientAdapter adapts the real kubecli.KubevirtClient to our VirtClientInterface.
+type virtClientAdapter struct {
+	client kubecli.KubevirtClient
+}
+
+// NewVirtClientAdapter wraps a real KubeVirt client with our interface.
+func NewVirtClientAdapter(client kubecli.KubevirtClient) VirtClientInterface {
+	return &virtClientAdapter{client: client}
+}
+
+// VirtualMachineInstance implements VirtClientInterface.
+func (v *virtClientAdapter) VirtualMachineInstance(namespace string) VMIInterface {
+	return v.client.VirtualMachineInstance(namespace)
+}
+
+// VirtualMachineInstanceMigration implements VirtClientInterface.
+func (v *virtClientAdapter) VirtualMachineInstanceMigration(namespace string) VMIMInterface {
+	return v.client.VirtualMachineInstanceMigration(namespace)
+}

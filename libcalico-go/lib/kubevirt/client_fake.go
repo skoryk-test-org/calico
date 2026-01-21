@@ -27,20 +27,30 @@ import (
 
 // FakeVirtClient is a fake implementation of VirtClientInterface for testing.
 type FakeVirtClient struct {
-	mu   sync.RWMutex
-	vmis map[string]map[string]*kubevirtv1.VirtualMachineInstance // namespace -> name -> VMI
+	mu         sync.RWMutex
+	vmis       map[string]map[string]*kubevirtv1.VirtualMachineInstance          // namespace -> name -> VMI
+	migrations map[string]map[string]*kubevirtv1.VirtualMachineInstanceMigration // namespace -> name -> VMIM
 }
 
 // NewFakeVirtClient creates a new fake VirtClient for testing.
 func NewFakeVirtClient() *FakeVirtClient {
 	return &FakeVirtClient{
-		vmis: make(map[string]map[string]*kubevirtv1.VirtualMachineInstance),
+		vmis:       make(map[string]map[string]*kubevirtv1.VirtualMachineInstance),
+		migrations: make(map[string]map[string]*kubevirtv1.VirtualMachineInstanceMigration),
 	}
 }
 
 // VirtualMachineInstance implements VirtClientInterface.
 func (f *FakeVirtClient) VirtualMachineInstance(namespace string) VMIInterface {
 	return &fakeVMIInterface{
+		client:    f,
+		namespace: namespace,
+	}
+}
+
+// VirtualMachineInstanceMigration implements VirtClientInterface.
+func (f *FakeVirtClient) VirtualMachineInstanceMigration(namespace string) VMIMInterface {
+	return &fakeVMIMInterface{
 		client:    f,
 		namespace: namespace,
 	}
@@ -166,4 +176,75 @@ func (b *VMIBuilder) WithMigration(migrationUID, sourcePod, targetPod string) *V
 // Build returns the constructed VMI.
 func (b *VMIBuilder) Build() *kubevirtv1.VirtualMachineInstance {
 	return b.vmi
+}
+
+// AddMigration adds a VirtualMachineInstanceMigration to the fake client.
+func (f *FakeVirtClient) AddMigration(vmim *kubevirtv1.VirtualMachineInstanceMigration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.migrations[vmim.Namespace] == nil {
+		f.migrations[vmim.Namespace] = make(map[string]*kubevirtv1.VirtualMachineInstanceMigration)
+	}
+	f.migrations[vmim.Namespace][vmim.Name] = vmim.DeepCopy()
+}
+
+// DeleteMigration removes a VirtualMachineInstanceMigration from the fake client.
+func (f *FakeVirtClient) DeleteMigration(namespace, name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.migrations[namespace] != nil {
+		delete(f.migrations[namespace], name)
+	}
+}
+
+// UpdateMigration updates a VirtualMachineInstanceMigration in the fake client.
+func (f *FakeVirtClient) UpdateMigration(vmim *kubevirtv1.VirtualMachineInstanceMigration) {
+	f.AddMigration(vmim) // AddMigration already does deep copy
+}
+
+// fakeVMIMInterface is a fake implementation of VMIMInterface.
+type fakeVMIMInterface struct {
+	client    *FakeVirtClient
+	namespace string
+}
+
+// Get implements VMIMInterface.
+func (f *fakeVMIMInterface) Get(ctx context.Context, name string, options metav1.GetOptions) (*kubevirtv1.VirtualMachineInstanceMigration, error) {
+	f.client.mu.RLock()
+	defer f.client.mu.RUnlock()
+
+	nsMigrations, exists := f.client.migrations[f.namespace]
+	if !exists {
+		return nil, fmt.Errorf("VirtualMachineInstanceMigration %s not found in namespace %s", name, f.namespace)
+	}
+
+	vmim, exists := nsMigrations[name]
+	if !exists {
+		return nil, fmt.Errorf("VirtualMachineInstanceMigration %s not found in namespace %s", name, f.namespace)
+	}
+
+	return vmim.DeepCopy(), nil
+}
+
+// List implements VMIMInterface.
+func (f *fakeVMIMInterface) List(ctx context.Context, options metav1.ListOptions) (*kubevirtv1.VirtualMachineInstanceMigrationList, error) {
+	f.client.mu.RLock()
+	defer f.client.mu.RUnlock()
+
+	list := &kubevirtv1.VirtualMachineInstanceMigrationList{
+		Items: []kubevirtv1.VirtualMachineInstanceMigration{},
+	}
+
+	nsMigrations, exists := f.client.migrations[f.namespace]
+	if !exists {
+		return list, nil
+	}
+
+	for _, vmim := range nsMigrations {
+		list.Items = append(list.Items, *vmim.DeepCopy())
+	}
+
+	return list, nil
 }

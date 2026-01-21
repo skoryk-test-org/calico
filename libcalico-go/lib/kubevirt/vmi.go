@@ -48,38 +48,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	kubevirtv1 "kubevirt.io/api/core/v1"
-	"kubevirt.io/client-go/kubecli"
 )
-
-// VirtClientInterface defines the minimal KubeVirt client interface needed for VMI operations.
-// This interface allows for easy mocking and testing without requiring a real KubeVirt cluster.
-type VirtClientInterface interface {
-	// VirtualMachineInstance returns an interface for VirtualMachineInstance operations in the given namespace.
-	VirtualMachineInstance(namespace string) VMIInterface
-}
-
-// VMIInterface defines the VirtualMachineInstance operations we need.
-type VMIInterface interface {
-	// Get retrieves a VirtualMachineInstance by name.
-	Get(ctx context.Context, name string, options metav1.GetOptions) (*kubevirtv1.VirtualMachineInstance, error)
-	// List retrieves all VirtualMachineInstances in the namespace.
-	List(ctx context.Context, options metav1.ListOptions) (*kubevirtv1.VirtualMachineInstanceList, error)
-}
-
-// virtClientAdapter adapts the real kubecli.KubevirtClient to our VirtClientInterface.
-type virtClientAdapter struct {
-	client kubecli.KubevirtClient
-}
-
-// NewVirtClientAdapter wraps a real KubeVirt client with our interface.
-func NewVirtClientAdapter(client kubecli.KubevirtClient) VirtClientInterface {
-	return &virtClientAdapter{client: client}
-}
-
-// VirtualMachineInstance implements VirtClientInterface.
-func (v *virtClientAdapter) VirtualMachineInstance(namespace string) VMIInterface {
-	return v.client.VirtualMachineInstance(namespace)
-}
 
 // KubeVirt label keys
 const (
