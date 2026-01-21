@@ -50,7 +50,6 @@ import (
 	kubevirtv1 "kubevirt.io/api/core/v1"
 )
 
-// KubeVirt label keys
 const (
 	// LabelKubeVirtMigrationJobUID is only present on migration target pods
 	// Value from kubevirtv1.MigrationJobLabel
@@ -69,9 +68,6 @@ type PodVMIInfo struct {
 	// MigrationJobUID is only present on migration target pods
 	// (extracted from the kubevirt.io/migrationJobUID label)
 	MigrationJobUID string
-
-	// isVirtLauncher indicates if this pod is owned by a VMI (virt-launcher pod)
-	isVirtLauncher bool
 }
 
 // VMIResource contains information about a VirtualMachineInstance resource queried from the Kubernetes API
@@ -173,7 +169,6 @@ func GetPodVMIInfo(pod *corev1.Pod, virtClient VirtClientInterface) (*PodVMIInfo
 	// Create PodVMIInfo with embedded VMIResource
 	info := &PodVMIInfo{
 		VMIResource:     vmiResource,
-		isVirtLauncher:  true,
 		MigrationJobUID: migrationUIDFromLabel,
 	}
 
@@ -182,7 +177,7 @@ func GetPodVMIInfo(pod *corev1.Pod, virtClient VirtClientInterface) (*PodVMIInfo
 
 // IsVirtLauncherPod returns true if the pod is a KubeVirt virt-launcher pod
 func (v *PodVMIInfo) IsVirtLauncherPod() bool {
-	return v.isVirtLauncher
+	return v.VMIResource != nil
 }
 
 // IsMigrationTarget returns true if this pod is a migration target pod.
