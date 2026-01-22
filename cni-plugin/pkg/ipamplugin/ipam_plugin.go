@@ -194,16 +194,11 @@ func cmdAdd(args *skel.CmdArgs) error {
 
 		// Set migration role based on whether this is a migration target
 		if vmiInfo.IsMigrationTarget() {
-			// For migration target pods, mark as target
-			// The source pod info remains in the primary attributes
 			attrs["migration-role"] = "target"
 			attrs["migration-job-uid"] = vmiInfo.GetVMIMigrationUID()
-			logrus.WithFields(logrus.Fields{
-				"pod":             epIDs.Pod,
-				"namespace":       epIDs.Namespace,
-				"vmiName":         vmiInfo.GetVMIName(),
-				"migrationJobUID": vmiInfo.GetVMIMigrationUID(),
-			}).Info("Migration target pod detected - IP will be reused from source pod")
+
+			// Handle migration target: retrieve existing IP and set AlternateOwnerAttrs
+			return handleMigrationTarget(calicoClient, handleID, attrs, conf, logger)
 		} else {
 			// For source/active pods, use active role
 			attrs["migration-role"] = "active"
@@ -221,9 +216,9 @@ func cmdAdd(args *skel.CmdArgs) error {
 			Attrs:    attrs,
 		}
 
-		// For VMI pods, set MaxAlloc=1 to ensure only one IP allocation per VMI
+		// For VMI pods, set MaxAllocPerIPVersion=1 to ensure only one IP per IP version per VMI.
 		if vmiInfo != nil {
-			assignArgs.MaxAlloc = 1
+			assignArgs.MaxAllocPerIPVersion = 1
 		}
 
 		logger.WithField("assignArgs", assignArgs).Info("Assigning provided IP")
@@ -336,10 +331,10 @@ func cmdAdd(args *skel.CmdArgs) error {
 			Namespace:        namespaceObj,
 		}
 
-		// For VMI pods, set MaxAlloc=1 to ensure only one IP allocation per VMI.
+		// For VMI pods, set MaxAllocPerIPVersion=1 to ensure only one IP per IP version per VMI.
 		// The IPAM library will automatically handle IP reuse if the handle already has an allocation.
 		if vmiInfo != nil {
-			assignArgs.MaxAlloc = 1
+			assignArgs.MaxAllocPerIPVersion = 1
 		}
 
 		if runtime.GOOS == "windows" {
@@ -725,4 +720,59 @@ func getNamespace(conf types.NetConf, namespace string, logger *logrus.Entry) (*
 	}
 
 	return ns, nil
+}
+
+// handleMigrationTarget handles CNI ADD for a migration target pod.
+// For migration targets, the IP(s) must already exist (allocated by source pod to VMI handle).
+// This function retrieves the existing IP(s) and sets AlternateOwnerAttrs with target pod info.
+func handleMigrationTarget(calicoClient client.Interface, handleID string, attrs map[string]string, conf types.NetConf, logger *logrus.Entry) error {
+	logger.Info("Migration target pod detected - retrieving existing IPs from VMI handle")
+
+	// For migration target, the IP(s) must already be allocated to the VMI handle by the source pod
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	existingIPs, err := calicoClient.IPAM().IPsByHandle(ctx, handleID)
+	if err != nil {
+		logger.WithError(err).Error("Failed to get existing IPs for migration target")
+		return fmt.Errorf("migration target pod but no IP allocated to VMI handle %s: %w", handleID, err)
+	}
+
+	if len(existingIPs) == 0 {
+		logger.Error("Migration target pod but VMI handle has no allocated IPs")
+		return fmt.Errorf("migration target pod but no IP allocated to VMI handle %s", handleID)
+	}
+
+	logger.WithField("ipCount", len(existingIPs)).Info("Found existing IPs for migration target")
+
+	// Update AlternateOwnerAttrs for all IPs (handles dual-stack with both IPv4 and IPv6)
+	for _, existingIP := range existingIPs {
+		logger.WithField("ip", existingIP.IP).Info("Setting AlternateOwnerAttrs for IP")
+
+		err = calicoClient.IPAM().SetAlternateOwnerAttrs(ctx, existingIP, handleID, attrs)
+		if err != nil {
+			logger.WithError(err).WithField("ip", existingIP.IP).Error("Failed to set AlternateOwnerAttrs")
+			return fmt.Errorf("failed to set AlternateOwnerAttrs for IP %s: %w", existingIP.IP, err)
+		}
+	}
+
+	logger.Info("Successfully set AlternateOwnerAttrs for all IPs")
+
+	// Build and return the result with all existing IPs
+	r := &cniv1.Result{}
+	for _, existingIP := range existingIPs {
+		if existingIP.IP.To4() == nil {
+			// IPv6
+			ipNetwork := net.IPNet{IP: existingIP.IP, Mask: net.CIDRMask(128, 128)}
+			r.IPs = append(r.IPs, &cniv1.IPConfig{Address: ipNetwork})
+			logger.WithField("ipv6", existingIP.IP).Info("Added IPv6 to result")
+		} else {
+			// IPv4
+			ipNetwork := net.IPNet{IP: existingIP.IP, Mask: net.CIDRMask(32, 32)}
+			r.IPs = append(r.IPs, &cniv1.IPConfig{Address: ipNetwork})
+			logger.WithField("ipv4", existingIP.IP).Info("Added IPv4 to result")
+		}
+	}
+
+	return cnitypes.PrintResult(r, conf.CNIVersion)
 }

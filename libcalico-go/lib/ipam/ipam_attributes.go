@@ -113,6 +113,63 @@ func (c ipamClient) ClearAttribute(ctx context.Context, ip cnet.IP, handleID str
 	return fmt.Errorf("max retries hit - excessive concurrent IPAM requests")
 }
 
+// SetAlternateOwnerAttrs sets the AlternateOwnerAttrs for an IP without modifying ActiveOwnerAttrs.
+func (c ipamClient) SetAlternateOwnerAttrs(ctx context.Context, ip cnet.IP, handleID string, attrs map[string]string) error {
+	logCtx := log.WithFields(log.Fields{
+		"ip":       ip,
+		"handleID": handleID,
+		"attrs":    attrs,
+	})
+	logCtx.Info("Setting AlternateOwnerAttrs")
+
+	// Find the pool for this IP.
+	pool, err := c.blockReaderWriter.getPoolForIP(ctx, ip, nil)
+	if err != nil {
+		return err
+	}
+	if pool == nil {
+		return fmt.Errorf("the provided IP address %s is not in a configured pool", ip)
+	}
+
+	// Get the block CIDR for this IP.
+	blockCIDR := getBlockCIDRForAddress(ip, pool)
+	logCtx.Debugf("IP %s is in block '%s'", ip, blockCIDR)
+
+	// Retry loop for CAS operations.
+	for i := 0; i < datastoreRetries; i++ {
+		// Get the allocation block.
+		obj, err := c.blockReaderWriter.queryBlock(ctx, blockCIDR, "")
+		if err != nil {
+			logCtx.WithError(err).Error("Error getting block")
+			return err
+		}
+
+		// Set AlternateOwnerAttrs in the block.
+		block := allocationBlock{obj.Value.(*model.AllocationBlock)}
+		err = block.setAlternateOwnerAttrs(ip, handleID, attrs)
+		if err != nil {
+			logCtx.WithError(err).Error("Failed to set AlternateOwnerAttrs")
+			return err
+		}
+
+		// Update the block using CAS.
+		_, err = c.blockReaderWriter.updateBlock(ctx, obj)
+		if err != nil {
+			if _, ok := err.(cerrors.ErrorResourceUpdateConflict); ok {
+				logCtx.WithError(err).Debug("CAS error setting AlternateOwnerAttrs - retry")
+				continue
+			}
+			logCtx.WithError(err).Error("Failed to update block")
+			return err
+		}
+
+		logCtx.Info("Successfully set AlternateOwnerAttrs")
+		return nil
+	}
+
+	return fmt.Errorf("max retries hit - excessive concurrent IPAM requests")
+}
+
 // SwapAttributes swaps ActiveOwnerAttrs and AlternateOwnerAttrs for an IP.
 func (c ipamClient) SwapAttributes(ctx context.Context, ip cnet.IP, handleID string) error {
 	logCtx := log.WithFields(log.Fields{

@@ -688,3 +688,37 @@ func (b *allocationBlock) swapAttributes(ip cnet.IP, handleID string) error {
 
 	return nil
 }
+
+// setAlternateOwnerAttrs sets the AlternateOwnerAttrs for an IP address without modifying ActiveOwnerAttrs.
+// This is used when a migration target pod requests the same IP that's already allocated.
+func (b *allocationBlock) setAlternateOwnerAttrs(ip cnet.IP, handleID string, attrs map[string]string) error {
+	logCtx := log.WithFields(log.Fields{"ip": ip, "handleID": handleID, "attrs": attrs})
+
+	// Convert to an ordinal.
+	ordinal, err := b.IPToOrdinal(ip)
+	if err != nil {
+		return err
+	}
+
+	// Check if allocated.
+	attrIndex := b.Allocations[ordinal]
+	if attrIndex == nil {
+		logCtx.Debug("IP is not currently assigned in block")
+		return cerrors.ErrorResourceDoesNotExist{Identifier: ip.String(), Err: errors.New("IP is unassigned")}
+	}
+
+	// Get the attribute for this IP.
+	attr := &b.Attributes[*attrIndex]
+
+	// Verify the handle matches.
+	if attr.HandleID == nil || sanitizeHandle(*attr.HandleID) != handleID {
+		return fmt.Errorf("IP %s is not assigned to handle %s", ip, handleID)
+	}
+
+	logCtx.Debug("Setting AlternateOwnerAttrs")
+
+	// Set the AlternateOwnerAttrs.
+	attr.AlternateOwnerAttrs = attrs
+
+	return nil
+}

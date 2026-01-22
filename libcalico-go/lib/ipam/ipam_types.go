@@ -47,9 +47,10 @@ type AssignIPArgs struct {
 	// The intended use for the IP address.  Used to determine the affinityType of the host.
 	IntendedUse v3.IPPoolAllowedUse
 
-	// MaxAlloc specifies the maximum number of IPs that can be allocated for this handle.
-	// If 0, no limit is enforced. Used for KubeVirt VMI pods to ensure only one IP allocation per VMI.
-	MaxAlloc int
+	// MaxAllocPerIPVersion specifies the maximum number of IPs per IP version (IPv4/IPv6)
+	// that can be allocated for this handle. If 0, no limit is enforced.
+	// Used for KubeVirt VMI pods to ensure only one IP allocation per VMI per IP version.
+	MaxAllocPerIPVersion int
 }
 
 // AutoAssignArgs defines the set of arguments for assigning one or more
@@ -95,9 +96,10 @@ type AutoAssignArgs struct {
 	// This field is required.
 	IntendedUse v3.IPPoolAllowedUse
 
-	// MaxAlloc specifies the maximum number of IPs that can be allocated across all blocks for this handle.
-	// If 0, no limit is enforced. Used for KubeVirt VMI pods to ensure only one IP allocation per VMI.
-	MaxAlloc int
+	// MaxAllocPerIPVersion specifies the maximum number of IPs per IP version (IPv4/IPv6)
+	// that can be allocated across all blocks for this handle. If 0, no limit is enforced.
+	// Used for KubeVirt VMI pods to ensure only one IP allocation per VMI per IP version.
+	MaxAllocPerIPVersion int
 
 	// The namespace object for namespaceSelector support.
 	Namespace *corev1.Namespace

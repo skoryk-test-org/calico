@@ -121,7 +121,7 @@ func (c ipamClient) AutoAssign(ctx context.Context, args AutoAssignArgs) (*IPAMA
 				return nil, nil, fmt.Errorf("provided IPv4 IPPools list contains one or more IPv6 IPPools")
 			}
 		}
-		v4ia, err = c.autoAssign(ctx, args.Num4, args.HandleID, args.Attrs, args.IPv4Pools, 4, hostname, args.MaxBlocksPerHost, args.HostReservedAttrIPv4s, args.IntendedUse, args.Namespace, args.MaxAlloc)
+		v4ia, err = c.autoAssign(ctx, args.Num4, args.HandleID, args.Attrs, args.IPv4Pools, 4, hostname, args.MaxBlocksPerHost, args.HostReservedAttrIPv4s, args.IntendedUse, args.Namespace, args.MaxAllocPerIPVersion)
 		if err != nil {
 			log.Errorf("Error assigning IPV4 addresses: %v", err)
 			return v4ia, nil, err
@@ -136,7 +136,7 @@ func (c ipamClient) AutoAssign(ctx context.Context, args AutoAssignArgs) (*IPAMA
 				return nil, nil, fmt.Errorf("provided IPv6 IPPools list contains one or more IPv4 IPPools")
 			}
 		}
-		v6ia, err = c.autoAssign(ctx, args.Num6, args.HandleID, args.Attrs, args.IPv6Pools, 6, hostname, args.MaxBlocksPerHost, args.HostReservedAttrIPv6s, args.IntendedUse, args.Namespace, args.MaxAlloc)
+		v6ia, err = c.autoAssign(ctx, args.Num6, args.HandleID, args.Attrs, args.IPv6Pools, 6, hostname, args.MaxBlocksPerHost, args.HostReservedAttrIPv6s, args.IntendedUse, args.Namespace, args.MaxAllocPerIPVersion)
 		if err != nil {
 			log.Errorf("Error assigning IPV6 addresses: %v", err)
 			return v4ia, v6ia, err
@@ -1076,7 +1076,7 @@ func (c ipamClient) AssignIP(ctx context.Context, args AssignIPArgs) error {
 
 		// Increment handle.
 		if args.HandleID != nil {
-			err := c.incrementHandle(ctx, *args.HandleID, blockCIDR, 1, args.MaxAlloc)
+			err := c.incrementHandle(ctx, *args.HandleID, blockCIDR, 1, args.MaxAllocPerIPVersion)
 			if err != nil {
 				// Check if error is due to maxAlloc constraint
 				if maxAllocErr, ok := err.(ErrMaxAllocReached); ok {
@@ -1104,8 +1104,8 @@ func (c ipamClient) AssignIP(ctx context.Context, args AssignIPArgs) error {
 
 					// The handle has other IP(s) but not the requested one
 					logCtx.WithField("existingIPs", existingIPNets).Error("Handle already has different IP(s) allocated")
-					return fmt.Errorf("handle %s already has IP(s) allocated, cannot assign additional IP %s (maxAlloc=%d)",
-						*args.HandleID, args.IP.String(), args.MaxAlloc)
+					return fmt.Errorf("handle %s already has IP(s) allocated, cannot assign additional IP %s (maxAllocPerIPVersion=%d)",
+						*args.HandleID, args.IP.String(), args.MaxAllocPerIPVersion)
 				}
 
 				log.WithError(err).Warn("Failed to increment handle")
@@ -1968,12 +1968,19 @@ func (c ipamClient) incrementHandle(ctx context.Context, handleID string, blockC
 		handle := allocationHandle{obj.Value.(*model.IPAMHandle)}
 
 		// Check if maxAlloc constraint would be violated before incrementing
+		// maxAlloc is enforced per IP version (IPv4/IPv6)
 		if maxAlloc > 0 {
-			currentTotal := handle.totalCount()
-			if currentTotal+num > maxAlloc {
+			// Determine IP version from the block CIDR
+			ipVersion := 4
+			if blockCIDR.IP.To4() == nil {
+				ipVersion = 6
+			}
+
+			currentCount := handle.totalCountByVersion(ipVersion)
+			if currentCount+num > maxAlloc {
 				return ErrMaxAllocReached{
 					HandleID:     handleID,
-					CurrentCount: currentTotal,
+					CurrentCount: currentCount,
 					MaxAlloc:     maxAlloc,
 				}
 			}

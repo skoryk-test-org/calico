@@ -116,6 +116,11 @@ type Interface interface {
 	// where a pod is deleted but the IP should remain allocated to the VMI handle.
 	ClearAttribute(ctx context.Context, ip cnet.IP, handleID string, attrType OwnerAttributeType) error
 
+	// SetAlternateOwnerAttrs sets the AlternateOwnerAttrs for an IP without modifying ActiveOwnerAttrs.
+	// This is used when a migration target pod starts and needs to register its attributes
+	// while the source pod is still active.
+	SetAlternateOwnerAttrs(ctx context.Context, ip cnet.IP, handleID string, attrs map[string]string) error
+
 	// SwapAttributes swaps ActiveOwnerAttrs and AlternateOwnerAttrs for an IP.
 	// This is used during VMI migration completion to transfer ownership from the
 	// source pod to the target pod.
