@@ -43,6 +43,7 @@ import (
 	"github.com/projectcalico/calico/libcalico-go/lib/apiconfig"
 	client "github.com/projectcalico/calico/libcalico-go/lib/clientv3"
 	"github.com/projectcalico/calico/libcalico-go/lib/errors"
+	"github.com/projectcalico/calico/libcalico-go/lib/hash"
 	"github.com/projectcalico/calico/libcalico-go/lib/ipam"
 	"github.com/projectcalico/calico/libcalico-go/lib/kubevirt"
 	"github.com/projectcalico/calico/libcalico-go/lib/logutils"
@@ -147,25 +148,29 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("error constructing WorkloadEndpoint name: %s", err)
 	}
 
-	// Default handle ID based on container ID
-	handleID := utils.GetHandleID(conf.Name, args.ContainerID, epIDs.WEPName)
-
 	// Check if this is a KubeVirt virt-launcher pod and use VMI-based handle ID if it is
 	vmiInfo, err := getVMIInfoForPod(conf, epIDs)
 	if err != nil {
 		return fmt.Errorf("failed to get VMI info: %w", err)
 	}
+
+	// Determine handle ID based on whether this is a VMI pod or regular pod
+	var handleID string
 	if vmiInfo != nil {
 		// Use VMI-based handle ID for IP stability across VMI pod recreations/migrations
-		handleID = fmt.Sprintf("%s.vmi.%s", conf.Name, vmiInfo.GetVMIUID())
+		// Handle ID is based on hash(namespace/vmiName) for persistence across VMI recreation
+		handleID = createVMIHandleID(conf.Name, vmiInfo)
 		logrus.WithFields(logrus.Fields{
 			"pod":               epIDs.Pod,
 			"namespace":         epIDs.Namespace,
-			"vmiName":           vmiInfo.GetVMIName(),
-			"vmiUID":            vmiInfo.GetVMIUID(),
+			"vmiName":           vmiInfo.GetName(),
+			"vmiUID":            vmiInfo.GetUID(),
 			"isMigrationTarget": vmiInfo.IsMigrationTarget(),
 			"handleID":          handleID,
 		}).Info("Detected KubeVirt virt-launcher pod, using VMI-based handle ID")
+	} else {
+		// Default handle ID based on container ID
+		handleID = utils.GetHandleID(conf.Name, args.ContainerID, epIDs.WEPName)
 	}
 
 	logger := logrus.WithFields(logrus.Fields{
@@ -190,7 +195,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 	}
 	// Add VMI attributes if this is a virt-launcher pod
 	if vmiInfo != nil {
-		attrs["vmi"] = vmiInfo.GetVMIName()
+		attrs["vmi"] = vmiInfo.GetName()
 
 		// Set migration role based on whether this is a migration target
 		if vmiInfo.IsMigrationTarget() {
@@ -509,6 +514,20 @@ func acquireIPAMLockBestEffort(path string) unlockFn {
 	}
 }
 
+// createVMIHandleID creates a handle ID for a KubeVirt VMI pod based on namespace and VMI name.
+// The handle ID format is: <networkName>.vmi:<hash>
+// This ensures IP persistence across VMI pod recreations and live migrations since
+// the VMI name and namespace remain stable (VM and VMI share the same name).
+func createVMIHandleID(confName string, vmiInfo *kubevirt.PodVMIInfo) string {
+	// Create content from namespace and VMI name
+	content := fmt.Sprintf("%s/%s", vmiInfo.GetNamespace(), vmiInfo.GetName())
+
+	uniqueID := hash.MakeUniqueID("vmi", content)
+
+	// Return in format: networkName.vmi:<hash>
+	return fmt.Sprintf("%s.%s", confName, uniqueID)
+}
+
 // getVMIInfoForPod retrieves KubeVirt VirtualMachineInstance (VMI) information for a given pod.
 // Returns (vmiInfo, nil) if the pod is a valid virt-launcher pod.
 // Returns (nil, nil) if the pod is not a virt-launcher pod.
@@ -576,28 +595,31 @@ func cmdDel(args *skel.CmdArgs) error {
 		return fmt.Errorf("error constructing WorkloadEndpoint name: %s", err)
 	}
 
-	// Default handle ID based on container ID
-	handleID := utils.GetHandleID(conf.Name, args.ContainerID, epIDs.WEPName)
-
 	// Check if this is a KubeVirt virt-launcher pod
 	vmiInfo, err := getVMIInfoForPod(conf, epIDs)
 	if err != nil {
 		return fmt.Errorf("failed to get VMI info: %w", err)
 	}
 
+	// Determine handle ID based on whether this is a VMI pod or regular pod
+	var handleID string
 	if vmiInfo != nil {
 		// Use VMI-based handle ID
-		handleID = fmt.Sprintf("%s.vmi.%s", conf.Name, vmiInfo.GetVMIUID())
+		// Handle ID is based on hash(namespace/vmiName) for persistence across VMI recreation
+		handleID = createVMIHandleID(conf.Name, vmiInfo)
 
 		// VMI deletion status is already available from embedded VMIResource
 		logrus.WithFields(logrus.Fields{
 			"pod":                   epIDs.Pod,
 			"namespace":             epIDs.Namespace,
-			"vmiName":               vmiInfo.GetVMIName(),
-			"vmiUID":                vmiInfo.GetVMIUID(),
+			"vmiName":               vmiInfo.GetName(),
+			"vmiUID":                vmiInfo.GetUID(),
 			"vmiDeletionInProgress": vmiInfo.IsDeletionInProgress(),
 			"handleID":              handleID,
 		}).Info("Detected KubeVirt virt-launcher pod deletion")
+	} else {
+		// Default handle ID based on container ID
+		handleID = utils.GetHandleID(conf.Name, args.ContainerID, epIDs.WEPName)
 	}
 
 	logger := logrus.WithFields(logrus.Fields{

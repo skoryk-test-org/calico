@@ -100,6 +100,30 @@ func (v *VMIResource) IsDeletionInProgress() bool {
 	return v.DeletionTimestamp != nil && !v.DeletionTimestamp.IsZero()
 }
 
+// GetName returns the VMI name
+func (v *VMIResource) GetName() string {
+	if v == nil {
+		return ""
+	}
+	return v.Name
+}
+
+// GetUID returns the VMI UID
+func (v *VMIResource) GetUID() string {
+	if v == nil {
+		return ""
+	}
+	return v.UID
+}
+
+// GetNamespace returns the VMI namespace
+func (v *VMIResource) GetNamespace() string {
+	if v == nil {
+		return ""
+	}
+	return v.Namespace
+}
+
 // GetPodVMIInfo determines if a pod is a KubeVirt virt-launcher pod by checking its
 // ownerReferences for a VirtualMachineInstance owner, then verifies it against the
 // actual VMI resource via the Kubernetes API.
@@ -175,31 +199,10 @@ func GetPodVMIInfo(pod *corev1.Pod, virtClient VirtClientInterface) (*PodVMIInfo
 	return info, nil
 }
 
-// IsVirtLauncherPod returns true if the pod is a KubeVirt virt-launcher pod
-func (v *PodVMIInfo) IsVirtLauncherPod() bool {
-	return v.VMIResource != nil
-}
-
 // IsMigrationTarget returns true if this pod is a migration target pod.
 // Migration target pods have the kubevirt.io/migrationJobUID label set.
 func (v *PodVMIInfo) IsMigrationTarget() bool {
 	return v.MigrationJobUID != ""
-}
-
-// GetVMIName returns the VMI name (from embedded VMIResource)
-func (v *PodVMIInfo) GetVMIName() string {
-	if v.VMIResource == nil {
-		return ""
-	}
-	return v.VMIResource.Name
-}
-
-// GetVMIUID returns the VMI UID (from embedded VMIResource)
-func (v *PodVMIInfo) GetVMIUID() string {
-	if v.VMIResource == nil {
-		return ""
-	}
-	return v.VMIResource.UID
 }
 
 // GetVMIMigrationUID returns the migration job UID.

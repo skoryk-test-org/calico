@@ -87,14 +87,14 @@ func TestGetPodVMIInfo_VirtLauncherPod(t *testing.T) {
 		t.Fatal("Expected PodVMIInfo, got nil")
 	}
 
-	if info.GetVMIName() != vmiName {
-		t.Errorf("Expected VMI name %s, got %s", vmiName, info.GetVMIName())
+	if info.GetName() != vmiName {
+		t.Errorf("Expected VMI name %s, got %s", vmiName, info.GetName())
 	}
-	if info.GetVMIUID() != vmiUID {
-		t.Errorf("Expected VMI UID %s, got %s", vmiUID, info.GetVMIUID())
+	if info.GetUID() != vmiUID {
+		t.Errorf("Expected VMI UID %s, got %s", vmiUID, info.GetUID())
 	}
-	if !info.IsVirtLauncherPod() {
-		t.Error("Expected IsVirtLauncherPod to be true")
+	if info.VMIResource == nil {
+		t.Error("Expected VMIResource to be non-nil")
 	}
 	if info.IsMigrationTarget() {
 		t.Error("Expected IsMigrationTarget to be false")

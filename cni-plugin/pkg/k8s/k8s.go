@@ -434,8 +434,8 @@ func CmdAddK8s(ctx context.Context, args *skel.CmdArgs, conf types.NetConf, epID
 		if virtClient, err := NewKubeVirtClient(conf, logger); err == nil {
 			if vmiInfo, err := kubevirt.GetPodVMIInfo(pod, virtClient); err == nil && vmiInfo != nil && vmiInfo.IsMigrationTarget() {
 				logger.WithFields(logrus.Fields{
-					"vmiName":         vmiInfo.GetVMIName(),
-					"vmiUID":          vmiInfo.GetVMIUID(),
+					"vmiName":         vmiInfo.GetName(),
+					"vmiUID":          vmiInfo.GetUID(),
 					"migrationJobUID": vmiInfo.GetVMIMigrationUID(),
 				}).Info("Migration target pod detected - skipping route programming")
 				routes = []*net.IPNet{} // Empty routes to skip route programming
