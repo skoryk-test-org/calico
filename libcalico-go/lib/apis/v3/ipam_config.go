@@ -50,6 +50,19 @@ type IPAMConfigSpec struct {
 	// +kubebuilder:validation:Maximum:=2147483647
 	// +optional
 	MaxBlocksPerHost int `json:"maxBlocksPerHost,omitempty"`
+
+	// KubeVirtVMAddressPersistence controls whether KubeVirt VirtualMachine workloads
+	// maintain persistent IP addresses across VM lifecycle events.
+	// When set to "Enabled", Calico automatically ensures that KubeVirt VMs retain their
+	// IP addresses when their underlying pods are recreated during VM operations such as
+	// reboot, live migration, or pod eviction. IP persistency is also ensured when the
+	// VirtualMachineInstance (VMI) resource is deleted and recreated by the VM controller.
+	// When set to "Disabled", VMs receive new IP addresses whenever their pods are recreated,
+	// following standard pod IP allocation behavior.
+	// Default: "Enabled"
+	// +kubebuilder:validation:Enum=Enabled;Disabled
+	// +optional
+	KubeVirtVMAddressPersistence string `json:"kubeVirtVMAddressPersistence,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

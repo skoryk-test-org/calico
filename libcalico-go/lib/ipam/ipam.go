@@ -2089,9 +2089,10 @@ func (c ipamClient) GetIPAMConfig(ctx context.Context) (*IPAMConfig, error) {
 			kvp := &model.KVPair{
 				Key: model.IPAMConfigKey{},
 				Value: &model.IPAMConfig{
-					StrictAffinity:     false,
-					AutoAllocateBlocks: true,
-					MaxBlocksPerHost:   0,
+					StrictAffinity:                false,
+					AutoAllocateBlocks:            true,
+					MaxBlocksPerHost:              0,
+					KubeVirtVMAddressPersistence: "Enabled", // Default: enabled for auto-detection
 				},
 			}
 

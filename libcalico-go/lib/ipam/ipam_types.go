@@ -122,6 +122,18 @@ type IPAMConfig struct {
 	// If non-zero, MaxBlocksPerHost specifies the max number of blocks that may
 	// be affine to a node.
 	MaxBlocksPerHost int
+
+	// KubeVirtVMAddressPersistence controls whether KubeVirt VirtualMachine workloads
+	// maintain persistent IP addresses across VM lifecycle events.
+	// When set to "Enabled", Calico automatically ensures that KubeVirt VMs retain their
+	// IP addresses when their underlying pods are recreated during VM operations such as
+	// reboot, live migration, or pod eviction. IP persistency is ensured when the
+	// VirtualMachineInstance (VMI) resource is deleted and recreated by the VM controller.
+	// When set to "Disabled", VMs receive new IP addresses whenever their pods are recreated,
+	// following standard pod IP allocation behavior.
+	// Valid values: "Enabled", "Disabled"
+	// Default: "Enabled" (IP persistence enabled if not specified)
+	KubeVirtVMAddressPersistence string
 }
 
 // GetUtilizationArgs defines the set of arguments for requesting IP utilization.
