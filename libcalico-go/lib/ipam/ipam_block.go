@@ -661,10 +661,8 @@ func (b *allocationBlock) setOwnerAttributes(ip cnet.IP, handleID string, attrsA
 		// If attrsActiveOwner is an empty map, clear the attribute (set to nil)
 		// Otherwise, set it to the provided attributes
 		if len(attrsActiveOwner) == 0 {
-			logCtx.Debug("Clearing ActiveOwnerAttrs")
 			attr.ActiveOwnerAttrs = nil
 		} else {
-			logCtx.Debug("Setting ActiveOwnerAttrs")
 			attr.ActiveOwnerAttrs = attrsActiveOwner
 		}
 	}
@@ -689,10 +687,8 @@ func (b *allocationBlock) setOwnerAttributes(ip cnet.IP, handleID string, attrsA
 		// If attrsAlternateOwner is an empty map, clear the attribute (set to nil)
 		// Otherwise, set it to the provided attributes
 		if len(attrsAlternateOwner) == 0 {
-			logCtx.Debug("Clearing AlternateOwnerAttrs")
 			attr.AlternateOwnerAttrs = nil
 		} else {
-			logCtx.Debug("Setting AlternateOwnerAttrs")
 			attr.AlternateOwnerAttrs = attrsAlternateOwner
 		}
 	}
