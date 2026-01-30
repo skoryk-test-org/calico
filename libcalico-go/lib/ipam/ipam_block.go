@@ -609,9 +609,16 @@ func intInSlice(searchInt int, slice []int) bool {
 	return false
 }
 
-// clearAttribute clears the specified attribute for an IP address without releasing it.
-func (b *allocationBlock) clearAttribute(ip cnet.IP, handleID string, attrType OwnerAttributeType) error {
-	logCtx := log.WithFields(log.Fields{"ip": ip, "handleID": handleID, "attrType": attrType})
+// setOwnerAttributes sets ActiveOwnerAttrs and/or AlternateOwnerAttrs for an IP address atomically.
+func (b *allocationBlock) setOwnerAttributes(ip cnet.IP, handleID string, attrsActiveOwner, attrsAlternateOwner map[string]string, expectedActiveOwner, expectedAlternateOwner *AttributeOwner) error {
+	logCtx := log.WithFields(log.Fields{
+		"ip":                     ip,
+		"handleID":               handleID,
+		"attrsActiveOwner":       attrsActiveOwner,
+		"attrsAlternateOwner":    attrsAlternateOwner,
+		"expectedActiveOwner":    expectedActiveOwner,
+		"expectedAlternateOwner": expectedAlternateOwner,
+	})
 
 	// Convert to an ordinal.
 	ordinal, err := b.IPToOrdinal(ip)
@@ -634,91 +641,61 @@ func (b *allocationBlock) clearAttribute(ip cnet.IP, handleID string, attrType O
 		return fmt.Errorf("IP %s is not assigned to handle %s", ip, handleID)
 	}
 
-	// Clear the requested attribute.
-	switch attrType {
-	case OwnerAttributeTypeActive:
-		logCtx.Info("Clearing ActiveOwnerAttrs")
-		attr.ActiveOwnerAttrs = nil
-	case OwnerAttributeTypeAlternate:
-		logCtx.Info("Clearing AlternateOwnerAttrs")
-		attr.AlternateOwnerAttrs = nil
-	default:
-		return fmt.Errorf("unknown attribute type: %s", attrType)
+	// Verify and set ActiveOwnerAttrs if requested.
+	if attrsActiveOwner != nil {
+		// If expectedActiveOwner is provided, verify current ActiveOwnerAttrs matches.
+		if expectedActiveOwner != nil {
+			if !matchAttributeOwner(attr.ActiveOwnerAttrs, expectedActiveOwner) {
+				// Build error message with current values for better debugging
+				currentPod := ""
+				currentNamespace := ""
+				if attr.ActiveOwnerAttrs != nil {
+					currentPod = attr.ActiveOwnerAttrs[AttributePod]
+					currentNamespace = attr.ActiveOwnerAttrs[AttributeNamespace]
+				}
+				return fmt.Errorf("cannot set ActiveOwnerAttrs: expected pod=%s namespace=%s but found pod=%s namespace=%s", expectedActiveOwner.Name, expectedActiveOwner.Namespace, currentPod, currentNamespace)
+			}
+			logCtx.Debug("Verified expected active owner matches before setting ActiveOwnerAttrs")
+		}
+
+		// If attrsActiveOwner is an empty map, clear the attribute (set to nil)
+		// Otherwise, set it to the provided attributes
+		if len(attrsActiveOwner) == 0 {
+			logCtx.Debug("Clearing ActiveOwnerAttrs")
+			attr.ActiveOwnerAttrs = nil
+		} else {
+			logCtx.Debug("Setting ActiveOwnerAttrs")
+			attr.ActiveOwnerAttrs = attrsActiveOwner
+		}
 	}
 
-	return nil
-}
+	// Verify and set AlternateOwnerAttrs if requested.
+	if attrsAlternateOwner != nil {
+		// If expectedAlternateOwner is provided, verify current AlternateOwnerAttrs matches.
+		if expectedAlternateOwner != nil {
+			if !matchAttributeOwner(attr.AlternateOwnerAttrs, expectedAlternateOwner) {
+				// Build error message with current values for better debugging
+				currentPod := ""
+				currentNamespace := ""
+				if attr.AlternateOwnerAttrs != nil {
+					currentPod = attr.AlternateOwnerAttrs[AttributePod]
+					currentNamespace = attr.AlternateOwnerAttrs[AttributeNamespace]
+				}
+				return fmt.Errorf("cannot set AlternateOwnerAttrs: expected pod=%s namespace=%s but found pod=%s namespace=%s", expectedAlternateOwner.Name, expectedAlternateOwner.Namespace, currentPod, currentNamespace)
+			}
+			logCtx.Debug("Verified expected alternate owner matches before setting AlternateOwnerAttrs")
+		}
 
-// swapAttributes swaps the ActiveOwnerAttrs and AlternateOwnerAttrs for an IP address.
-func (b *allocationBlock) swapAttributes(ip cnet.IP, handleID string) error {
-	logCtx := log.WithFields(log.Fields{"ip": ip, "handleID": handleID})
-
-	// Convert to an ordinal.
-	ordinal, err := b.IPToOrdinal(ip)
-	if err != nil {
-		return err
+		// If attrsAlternateOwner is an empty map, clear the attribute (set to nil)
+		// Otherwise, set it to the provided attributes
+		if len(attrsAlternateOwner) == 0 {
+			logCtx.Debug("Clearing AlternateOwnerAttrs")
+			attr.AlternateOwnerAttrs = nil
+		} else {
+			logCtx.Debug("Setting AlternateOwnerAttrs")
+			attr.AlternateOwnerAttrs = attrsAlternateOwner
+		}
 	}
-
-	// Check if allocated.
-	attrIndex := b.Allocations[ordinal]
-	if attrIndex == nil {
-		logCtx.Debug("IP is not currently assigned in block")
-		return cerrors.ErrorResourceDoesNotExist{Identifier: ip.String(), Err: errors.New("IP is unassigned")}
-	}
-
-	// Get the attribute for this IP.
-	attr := &b.Attributes[*attrIndex]
-
-	// Verify the handle matches.
-	if attr.HandleID == nil || sanitizeHandle(*attr.HandleID) != handleID {
-		return fmt.Errorf("IP %s is not assigned to handle %s", ip, handleID)
-	}
-
-	// Verify we have both attributes to swap.
-	if attr.AlternateOwnerAttrs == nil || len(attr.AlternateOwnerAttrs) == 0 {
-		return fmt.Errorf("cannot swap attributes: AlternateOwnerAttrs is empty")
-	}
-
-	logCtx.Info("Swapping ActiveOwnerAttrs and AlternateOwnerAttrs")
-
-	// Perform the swap.
-	oldActive := attr.ActiveOwnerAttrs
-	attr.ActiveOwnerAttrs = attr.AlternateOwnerAttrs
-	attr.AlternateOwnerAttrs = oldActive
-
-	return nil
-}
-
-// setAlternateOwnerAttrs sets the AlternateOwnerAttrs for an IP address without modifying ActiveOwnerAttrs.
-// This is used when a migration target pod requests the same IP that's already allocated.
-func (b *allocationBlock) setAlternateOwnerAttrs(ip cnet.IP, handleID string, attrs map[string]string) error {
-	logCtx := log.WithFields(log.Fields{"ip": ip, "handleID": handleID, "attrs": attrs})
-
-	// Convert to an ordinal.
-	ordinal, err := b.IPToOrdinal(ip)
-	if err != nil {
-		return err
-	}
-
-	// Check if allocated.
-	attrIndex := b.Allocations[ordinal]
-	if attrIndex == nil {
-		logCtx.Debug("IP is not currently assigned in block")
-		return cerrors.ErrorResourceDoesNotExist{Identifier: ip.String(), Err: errors.New("IP is unassigned")}
-	}
-
-	// Get the attribute for this IP.
-	attr := &b.Attributes[*attrIndex]
-
-	// Verify the handle matches.
-	if attr.HandleID == nil || sanitizeHandle(*attr.HandleID) != handleID {
-		return fmt.Errorf("IP %s is not assigned to handle %s", ip, handleID)
-	}
-
-	logCtx.Debug("Setting AlternateOwnerAttrs")
-
-	// Set the AlternateOwnerAttrs.
-	attr.AlternateOwnerAttrs = attrs
 
 	return nil
 }

@@ -244,3 +244,11 @@ const (
 	// OwnerAttributeTypeAlternate refers to AlternateOwnerAttrs (secondary owner during migration).
 	OwnerAttributeTypeAlternate OwnerAttributeType = "alternate"
 )
+
+// AttributeOwner represents the owner of an IP allocation attribute.
+type AttributeOwner struct {
+	// Namespace is the Kubernetes namespace of the pod.
+	Namespace string
+	// Name is the name of the pod.
+	Name string
+}

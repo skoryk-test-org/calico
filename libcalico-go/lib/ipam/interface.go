@@ -44,9 +44,9 @@ type Interface interface {
 	ReleaseIPs(ctx context.Context, ips ...ReleaseOptions) ([]cnet.IP, []ReleaseOptions, error)
 
 	// GetAssignmentAttributes returns the attributes stored with the given IP address
-	// for the specified owner type (Active or Alternate), as well as the handle used
-	// for assignment (if any).
-	GetAssignmentAttributes(ctx context.Context, addr cnet.IP, attrType OwnerAttributeType) (map[string]string, *string, error)
+	// for both ActiveOwnerAttrs and AlternateOwnerAttrs, as well as the handle used
+	// for assignment (if any). This provides an atomic snapshot of both attributes.
+	GetAssignmentAttributes(ctx context.Context, addr cnet.IP) (activeAttrs map[string]string, alternateAttrs map[string]string, handle *string, err error)
 
 	// IPsByHandle returns a list of all IP addresses that have been
 	// assigned using the provided handle.
@@ -111,18 +111,34 @@ type Interface interface {
 	// finds any that are in older formats, upgrades them.  It is idempotent.
 	UpgradeHost(ctx context.Context, nodeName string) error
 
-	// ClearAttribute clears the specified attribute (Active or Alternate) for an IP
-	// without releasing the IP itself. This is used for VMI live migration scenarios
-	// where a pod is deleted but the IP should remain allocated to the VMI handle.
-	ClearAttribute(ctx context.Context, ip cnet.IP, handleID string, attrType OwnerAttributeType) error
-
-	// SetAlternateOwnerAttrs sets the AlternateOwnerAttrs for an IP without modifying ActiveOwnerAttrs.
-	// This is used when a migration target pod starts and needs to register its attributes
-	// while the source pod is still active.
-	SetAlternateOwnerAttrs(ctx context.Context, ip cnet.IP, handleID string, attrs map[string]string) error
-
-	// SwapAttributes swaps ActiveOwnerAttrs and AlternateOwnerAttrs for an IP.
-	// This is used during VMI migration completion to transfer ownership from the
-	// source pod to the target pod.
-	SwapAttributes(ctx context.Context, ip cnet.IP, handleID string) error
+	// SetOwnerAttributes sets ActiveOwnerAttrs and/or AlternateOwnerAttrs for an IP atomically.
+	// This is used for VMI live migration scenarios to manage pod ownership attributes.
+	//
+	// Parameters:
+	//   - attrsActiveOwner: Attributes to set for ActiveOwnerAttrs.
+	//     If nil, ActiveOwnerAttrs is not modified.
+	//     If an empty map (map[string]string{}), ActiveOwnerAttrs is cleared (set to nil).
+	//
+	//   - attrsAlternateOwner: Attributes to set for AlternateOwnerAttrs.
+	//     If nil, AlternateOwnerAttrs is not modified.
+	//     If an empty map (map[string]string{}), AlternateOwnerAttrs is cleared (set to nil).
+	//
+	//   - expectedActiveOwner:
+	//     If non-nil, verifies current ActiveOwnerAttrs matches before setting.
+	//        Prevents overwriting attributes that belong to a different pod.
+	//     If an AttributeOwner with empty namespace and name is passed,
+	//        verifies that ActiveOwnerAttrs is empty (nil or empty map) before setting.
+	//
+	//  - expectedAlternateOwner:
+	//     If non-nil, verifies current AlternateOwnerAttrs matches before setting.
+	//        Prevents overwriting attributes that belong to a different pod.
+	//     If an AttributeOwner with empty namespace and name is passed,
+	//        verifies that AlternateOwnerAttrs is empty (nil or empty map) before setting.
+	//
+	// Use cases:
+	//   - Set AlternateOwnerAttrs only: attrsActiveOwner=nil, attrsAlternateOwner=<target pod attrs>
+	//   - Clear ActiveOwnerAttrs: attrsActiveOwner=map[string]string{}, attrsAlternateOwner=nil
+	//   - Swap attributes: attrsActiveOwner=<current alternate>, attrsAlternateOwner=<current active>
+	//   - Set both: attrsActiveOwner=<new active>, attrsAlternateOwner=<new alternate>
+	SetOwnerAttributes(ctx context.Context, ip cnet.IP, handleID string, attrsActiveOwner, attrsAlternateOwner map[string]string, expectedActiveOwner, expectedAlternateOwner *AttributeOwner) error
 }

@@ -26,44 +26,87 @@ import (
 )
 
 // GetAssignmentAttributes returns the attributes stored with the given IP address
-// for the specified owner type (Active or Alternate), as well as the handle used
-// for assignment (if any).
-func (c ipamClient) GetAssignmentAttributes(ctx context.Context, addr cnet.IP, attrType OwnerAttributeType) (map[string]string, *string, error) {
+// for both ActiveOwnerAttrs and AlternateOwnerAttrs, as well as the handle used
+// for assignment (if any). This provides an atomic snapshot of both attributes.
+func (c ipamClient) GetAssignmentAttributes(ctx context.Context, addr cnet.IP) (map[string]string, map[string]string, *string, error) {
 	pool, err := c.blockReaderWriter.getPoolForIP(ctx, addr, nil)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if pool == nil {
 		log.Errorf("Error reading pool for %s", addr.String())
-		return nil, nil, cerrors.ErrorResourceDoesNotExist{Identifier: addr.String(), Err: errors.New("No valid IPPool")}
+		return nil, nil, nil, cerrors.ErrorResourceDoesNotExist{Identifier: addr.String(), Err: errors.New("No valid IPPool")}
 	}
 	blockCIDR := getBlockCIDRForAddress(addr, pool)
 	obj, err := c.blockReaderWriter.queryBlock(ctx, blockCIDR, "")
 	if err != nil {
 		log.Errorf("Error reading block %s: %v", blockCIDR, err)
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	block := allocationBlock{obj.Value.(*model.AllocationBlock)}
-	attrs, err := block.attributesForIP(addr, attrType)
+
+	// Get both ActiveOwnerAttrs and AlternateOwnerAttrs
+	activeAttrs, err := block.attributesForIP(addr, OwnerAttributeTypeActive)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
+	alternateAttrs, err := block.attributesForIP(addr, OwnerAttributeTypeAlternate)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
 	handle, err := block.handleForIP(addr)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return attrs, handle, nil
+	return activeAttrs, alternateAttrs, handle, nil
 }
 
-// ClearAttribute clears the specified attribute (Active or Alternate) for an IP
-// without releasing the IP itself.
-func (c ipamClient) ClearAttribute(ctx context.Context, ip cnet.IP, handleID string, attrType OwnerAttributeType) error {
+// GetEmptyAttributeOwner returns an AttributeOwner with empty namespace and name.
+// This can be used with MatchAttributeOwner to check if attributes are empty.
+func GetEmptyAttributeOwner() *AttributeOwner {
+	return &AttributeOwner{
+		Namespace: "",
+		Name:      "",
+	}
+}
+
+// matchAttributeOwner checks if the given attributes match the expected owner.
+// If expectedOwner is the empty owner (from GetEmptyAttributeOwner), it matches
+// when attrs is empty (len == 0). Otherwise, it compares the "pod" and "namespace"
+// keys in attrs with expectedOwner's Name and Namespace.
+func matchAttributeOwner(attrs map[string]string, expectedOwner *AttributeOwner) bool {
+	if expectedOwner == nil {
+		return false
+	}
+
+	// If expectedOwner is the empty owner, match if attrs is empty
+	if expectedOwner.Namespace == "" && expectedOwner.Name == "" {
+		return attrs == nil || len(attrs) == 0
+	}
+
+	// Otherwise, compare pod and namespace
+	if attrs == nil || len(attrs) == 0 {
+		return false
+	}
+
+	actualPod, podExists := attrs[AttributePod]
+	actualNamespace, nsExists := attrs[AttributeNamespace]
+
+	return podExists && nsExists && actualPod == expectedOwner.Name && actualNamespace == expectedOwner.Namespace
+}
+
+// SetOwnerAttributes sets ActiveOwnerAttrs and/or AlternateOwnerAttrs for an IP atomically.
+func (c ipamClient) SetOwnerAttributes(ctx context.Context, ip cnet.IP, handleID string, attrsActiveOwner, attrsAlternateOwner map[string]string, expectedActiveOwner, expectedAlternateOwner *AttributeOwner) error {
 	logCtx := log.WithFields(log.Fields{
-		"ip":       ip,
-		"handleID": handleID,
-		"attrType": attrType,
+		"ip":                     ip,
+		"handleID":               handleID,
+		"attrsActiveOwner":       attrsActiveOwner,
+		"attrsAlternateOwner":    attrsAlternateOwner,
+		"expectedActiveOwner":    expectedActiveOwner,
+		"expectedAlternateOwner": expectedAlternateOwner,
 	})
-	logCtx.Info("Clearing IP attribute")
+	logCtx.Info("Setting owner attributes")
 
 	// Find the pool for this IP.
 	pool, err := c.blockReaderWriter.getPoolForIP(ctx, ip, nil)
@@ -87,11 +130,11 @@ func (c ipamClient) ClearAttribute(ctx context.Context, ip cnet.IP, handleID str
 			return err
 		}
 
-		// Clear the attribute in the block.
+		// Set owner attributes in the block.
 		block := allocationBlock{obj.Value.(*model.AllocationBlock)}
-		err = block.clearAttribute(ip, handleID, attrType)
+		err = block.setOwnerAttributes(ip, handleID, attrsActiveOwner, attrsAlternateOwner, expectedActiveOwner, expectedAlternateOwner)
 		if err != nil {
-			logCtx.WithError(err).Error("Failed to clear attribute")
+			logCtx.WithError(err).Error("Failed to set owner attributes")
 			return err
 		}
 
@@ -99,127 +142,14 @@ func (c ipamClient) ClearAttribute(ctx context.Context, ip cnet.IP, handleID str
 		_, err = c.blockReaderWriter.updateBlock(ctx, obj)
 		if err != nil {
 			if _, ok := err.(cerrors.ErrorResourceUpdateConflict); ok {
-				logCtx.WithError(err).Debug("CAS error clearing attribute - retry")
+				logCtx.WithError(err).Debug("CAS error setting owner attributes - retry")
 				continue
 			}
 			logCtx.WithError(err).Error("Failed to update block")
 			return err
 		}
 
-		logCtx.Info("Successfully cleared IP attribute")
-		return nil
-	}
-
-	return fmt.Errorf("max retries hit - excessive concurrent IPAM requests")
-}
-
-// SetAlternateOwnerAttrs sets the AlternateOwnerAttrs for an IP without modifying ActiveOwnerAttrs.
-func (c ipamClient) SetAlternateOwnerAttrs(ctx context.Context, ip cnet.IP, handleID string, attrs map[string]string) error {
-	logCtx := log.WithFields(log.Fields{
-		"ip":       ip,
-		"handleID": handleID,
-		"attrs":    attrs,
-	})
-	logCtx.Info("Setting AlternateOwnerAttrs")
-
-	// Find the pool for this IP.
-	pool, err := c.blockReaderWriter.getPoolForIP(ctx, ip, nil)
-	if err != nil {
-		return err
-	}
-	if pool == nil {
-		return fmt.Errorf("the provided IP address %s is not in a configured pool", ip)
-	}
-
-	// Get the block CIDR for this IP.
-	blockCIDR := getBlockCIDRForAddress(ip, pool)
-	logCtx.Debugf("IP %s is in block '%s'", ip, blockCIDR)
-
-	// Retry loop for CAS operations.
-	for i := 0; i < datastoreRetries; i++ {
-		// Get the allocation block.
-		obj, err := c.blockReaderWriter.queryBlock(ctx, blockCIDR, "")
-		if err != nil {
-			logCtx.WithError(err).Error("Error getting block")
-			return err
-		}
-
-		// Set AlternateOwnerAttrs in the block.
-		block := allocationBlock{obj.Value.(*model.AllocationBlock)}
-		err = block.setAlternateOwnerAttrs(ip, handleID, attrs)
-		if err != nil {
-			logCtx.WithError(err).Error("Failed to set AlternateOwnerAttrs")
-			return err
-		}
-
-		// Update the block using CAS.
-		_, err = c.blockReaderWriter.updateBlock(ctx, obj)
-		if err != nil {
-			if _, ok := err.(cerrors.ErrorResourceUpdateConflict); ok {
-				logCtx.WithError(err).Debug("CAS error setting AlternateOwnerAttrs - retry")
-				continue
-			}
-			logCtx.WithError(err).Error("Failed to update block")
-			return err
-		}
-
-		logCtx.Info("Successfully set AlternateOwnerAttrs")
-		return nil
-	}
-
-	return fmt.Errorf("max retries hit - excessive concurrent IPAM requests")
-}
-
-// SwapAttributes swaps ActiveOwnerAttrs and AlternateOwnerAttrs for an IP.
-func (c ipamClient) SwapAttributes(ctx context.Context, ip cnet.IP, handleID string) error {
-	logCtx := log.WithFields(log.Fields{
-		"ip":       ip,
-		"handleID": handleID,
-	})
-	logCtx.Info("Swapping IP attributes")
-
-	// Find the pool for this IP.
-	pool, err := c.blockReaderWriter.getPoolForIP(ctx, ip, nil)
-	if err != nil {
-		return err
-	}
-	if pool == nil {
-		return fmt.Errorf("the provided IP address %s is not in a configured pool", ip)
-	}
-
-	// Get the block CIDR for this IP.
-	blockCIDR := getBlockCIDRForAddress(ip, pool)
-	logCtx.Debugf("IP %s is in block '%s'", ip, blockCIDR)
-
-	// Retry loop for CAS operations.
-	for i := 0; i < datastoreRetries; i++ {
-		// Get the allocation block.
-		obj, err := c.blockReaderWriter.queryBlock(ctx, blockCIDR, "")
-		if err != nil {
-			logCtx.WithError(err).Error("Error getting block")
-			return err
-		}
-
-		// Swap the attributes in the block.
-		block := allocationBlock{obj.Value.(*model.AllocationBlock)}
-		err = block.swapAttributes(ip, handleID)
-		if err != nil {
-			logCtx.WithError(err).Error("Failed to swap attributes")
-			return err
-		}
-
-		// Update the block using CAS.
-		_, err = c.blockReaderWriter.updateBlock(ctx, obj)
-		if err != nil {
-			if _, ok := err.(cerrors.ErrorResourceUpdateConflict); ok {
-				logCtx.WithError(err).Debug("CAS error swapping attributes - retry")
-				continue
-			}
-			logCtx.WithError(err).Error("Failed to update block")
-			return err
-		}
-
-		logCtx.Info("Successfully swapped IP attributes")
+		logCtx.Info("Successfully set owner attributes")
 		return nil
 	}
 

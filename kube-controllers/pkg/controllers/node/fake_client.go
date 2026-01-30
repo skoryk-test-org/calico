@@ -310,19 +310,14 @@ func (f *fakeIPAMClient) ReleaseIPs(ctx context.Context, opts ...ipam.ReleaseOpt
 }
 
 // GetAssignmentAttributes returns the attributes stored with the given IP address
-// for the specified owner type (Active or Alternate), as well as the handle used
+// for both ActiveOwnerAttrs and AlternateOwnerAttrs, as well as the handle used
 // for assignment (if any).
-func (f *fakeIPAMClient) GetAssignmentAttributes(ctx context.Context, addr cnet.IP, attrType ipam.OwnerAttributeType) (map[string]string, *string, error) {
+func (f *fakeIPAMClient) GetAssignmentAttributes(ctx context.Context, addr cnet.IP) (map[string]string, map[string]string, *string, error) {
 	panic("not implemented") // TODO: Implement
 }
 
-// ClearAttribute clears either the ActiveOwnerAttrs or AlternateOwnerAttrs for a given IP.
-func (f *fakeIPAMClient) ClearAttribute(ctx context.Context, ip cnet.IP, handleID string, attrType ipam.OwnerAttributeType) error {
-	panic("not implemented") // TODO: Implement
-}
-
-// SwapAttributes swaps the ActiveOwnerAttrs and AlternateOwnerAttrs for a given IP.
-func (f *fakeIPAMClient) SwapAttributes(ctx context.Context, ip cnet.IP, handleID string) error {
+// SetOwnerAttributes sets ActiveOwnerAttrs and/or AlternateOwnerAttrs for an IP atomically.
+func (f *fakeIPAMClient) SetOwnerAttributes(ctx context.Context, ip cnet.IP, handleID string, attrsActiveOwner, attrsAlternateOwner map[string]string, expectedActiveOwner, expectedAlternateOwner *ipam.AttributeOwner) error {
 	panic("not implemented") // TODO: Implement
 }
 

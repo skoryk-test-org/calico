@@ -667,21 +667,31 @@ func cmdDel(args *skel.CmdArgs) error {
 				return nil // Don't fail CNI deletion if we can't clear attributes
 			}
 
+			// Build expected owner for verification
+			expectedOwner := &ipam.AttributeOwner{
+				Namespace: epIDs.Namespace,
+				Name:      epIDs.Pod,
+			}
+
 			// Try to clear both Active and Alternate attributes for safety
-			// We don't know which one contains this pod's data
+			// We don't know which one contains this pod's data, but we verify ownership
+			// by passing expectedOwner to ensure we only clear attributes belonging to this pod
+			emptyMap := map[string]string{} // Empty map means clear the attribute
 			for _, ip := range ips {
 				logger.WithField("ip", ip).Info("Attempting to clear pod attributes")
 
-				// Try to clear ActiveOwnerAttrs first
-				if err := calicoClient.IPAM().ClearAttribute(ctx, ip, handleID, ipam.OwnerAttributeTypeActive); err != nil {
-					logger.WithError(err).WithField("ip", ip).Warn("Failed to clear ActiveOwnerAttrs")
+				// Try to clear ActiveOwnerAttrs first, verifying it matches this pod
+				// Pass empty map to clear, and expectedOwner to verify
+				if err := calicoClient.IPAM().SetOwnerAttributes(ctx, ip, handleID, emptyMap, nil, expectedOwner, nil); err != nil {
+					logger.WithError(err).WithField("ip", ip).Debug("Failed to clear ActiveOwnerAttrs (may not match or not exist)")
 				} else {
 					logger.WithField("ip", ip).Info("Successfully cleared ActiveOwnerAttrs")
 				}
 
-				// Also try to clear AlternateOwnerAttrs
-				if err := calicoClient.IPAM().ClearAttribute(ctx, ip, handleID, ipam.OwnerAttributeTypeAlternate); err != nil {
-					logger.WithError(err).WithField("ip", ip).Debug("Failed to clear AlternateOwnerAttrs (may not exist)")
+				// Also try to clear AlternateOwnerAttrs, verifying it matches this pod
+				// Pass empty map to clear, and expectedOwner to verify
+				if err := calicoClient.IPAM().SetOwnerAttributes(ctx, ip, handleID, nil, emptyMap, nil, expectedOwner); err != nil {
+					logger.WithError(err).WithField("ip", ip).Debug("Failed to clear AlternateOwnerAttrs (may not match or not exist)")
 				} else {
 					logger.WithField("ip", ip).Info("Successfully cleared AlternateOwnerAttrs")
 				}
@@ -767,11 +777,24 @@ func handleMigrationTarget(calicoClient client.Interface, handleID string, attrs
 
 	logger.WithField("ipCount", len(existingIPs)).Info("Found existing IPs for migration target")
 
+	// Build expected alternate owner from the target pod attributes we're about to set
+	// This will be used to verify existing AlternateOwnerAttrs matches before overwriting
+	var expectedAlternateOwner *ipam.AttributeOwner
+	if podName, podExists := attrs[ipam.AttributePod]; podExists {
+		if namespace, nsExists := attrs[ipam.AttributeNamespace]; nsExists {
+			expectedAlternateOwner = &ipam.AttributeOwner{
+				Namespace: namespace,
+				Name:      podName,
+			}
+		}
+	}
+
 	// Update AlternateOwnerAttrs for all IPs (handles dual-stack with both IPv4 and IPv6)
 	for _, existingIP := range existingIPs {
 		logger.WithField("ip", existingIP.IP).Info("Setting AlternateOwnerAttrs for IP")
 
-		err = calicoClient.IPAM().SetAlternateOwnerAttrs(ctx, existingIP, handleID, attrs)
+		// Set AlternateOwnerAttrs only (don't modify ActiveOwnerAttrs), verifying it matches expectedAlternateOwner if it already exists
+		err = calicoClient.IPAM().SetOwnerAttributes(ctx, existingIP, handleID, nil, attrs, nil, expectedAlternateOwner)
 		if err != nil {
 			logger.WithError(err).WithField("ip", existingIP.IP).Error("Failed to set AlternateOwnerAttrs")
 			return fmt.Errorf("failed to set AlternateOwnerAttrs for IP %s: %w", existingIP.IP, err)
