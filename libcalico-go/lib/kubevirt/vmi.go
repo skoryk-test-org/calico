@@ -58,12 +58,16 @@ const (
 	// VMI API Group, Version, and Resource for dynamic client
 	VMIGroup   = "kubevirt.io"
 	VMIVersion = "v1"
+
+	// VM API Group and Version (same as VMI)
+	VMGroup   = "kubevirt.io"
+	VMVersion = "v1"
 )
 
 // PodVMIInfo contains KubeVirt VMI-related information extracted from a pod's
 // ownerReferences and verified against the actual VMI resource via the Kubernetes API.
 type PodVMIInfo struct {
-	*VMIResource // Embedded: Name, Namespace, UID, DeletionTimestamp, CreationTimestamp
+	*VMIResource // Embedded: Name, Namespace, UID, VMOwner
 
 	// MigrationJobUID is only present on migration target pods
 	// (extracted from the kubevirt.io/migrationJobUID label)
@@ -78,26 +82,19 @@ type VMIResource struct {
 	Namespace string
 	// UID is the VMI UID
 	UID string
-	// DeletionTimestamp indicates when the VMI was marked for deletion
-	// If nil, the VMI is not being deleted
-	DeletionTimestamp *metav1.Time
-	// ActivePods is a mapping of pod UID to node name
-	// Multiple pods can be active during migration (source and target)
-	ActivePods map[string]string
-	// MigrationUID is the UID of the active migration (if any)
-	// Empty string if no migration is in progress
-	MigrationUID string
-	// MigrationTargetPod is the name of the target pod during migration
-	// Empty string if no migration is in progress
-	MigrationTargetPod string
-	// MigrationSourcePod is the name of the source pod during migration
-	// Empty string if no migration is in progress
-	MigrationSourcePod string
+	// VMOwner is a pointer to the VirtualMachine resource that owns this VMI (if any)
+	// This is populated if the VMI has an ownerReference pointing to a VM object
+	// nil if the VMI is not owned by a VM
+	VMOwner *kubevirtv1.VirtualMachine
 }
 
-// IsDeletionInProgress returns true if the VMI has a deletion timestamp set
-func (v *VMIResource) IsDeletionInProgress() bool {
-	return v.DeletionTimestamp != nil && !v.DeletionTimestamp.IsZero()
+// IsVMObjectDeletionInProgress returns true if the VM owner has a deletion timestamp set
+// Returns false if VMOwner is nil or if VMOwner has no deletion timestamp
+func (v *VMIResource) IsVMObjectDeletionInProgress() bool {
+	if v == nil || v.VMOwner == nil {
+		return false
+	}
+	return v.VMOwner.DeletionTimestamp != nil && !v.VMOwner.DeletionTimestamp.IsZero()
 }
 
 // GetName returns the VMI name
@@ -211,62 +208,9 @@ func (v *PodVMIInfo) GetVMIMigrationUID() string {
 	return v.MigrationJobUID
 }
 
-// verifyVMIOwnership validates that the pod is actually owned by the VMI with the given UID.
-// This prevents users from spoofing virt-launcher behavior by adding labels to normal pods.
-// KubeVirt sets the VirtualMachineInstance as the controller owner of virt-launcher pods.
-// GetVMIResourceByUID queries the Kubernetes API for a VirtualMachineInstance with the given UID
-// and returns a VMIResource containing its metadata.
-// Returns:
-//   - (*VMIResource, nil) if the VMI is found
-//   - (nil, error) if there was an error querying the API or VMI not found
-func GetVMIResourceByUID(ctx context.Context, virtClient VirtClientInterface, namespace, vmiUID string) (*VMIResource, error) {
-	// List VMIs in the namespace
-	vmiList, err := virtClient.VirtualMachineInstance(namespace).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("failed to list VMIs in namespace %s: %w", namespace, err)
-	}
-
-	// Find the VMI with matching UID
-	for _, vmi := range vmiList.Items {
-		if string(vmi.UID) == vmiUID {
-			// Convert ActivePods from map[types.UID]string to map[string]string
-			activePods := make(map[string]string)
-			if vmi.Status.ActivePods != nil {
-				for podUID, nodeName := range vmi.Status.ActivePods {
-					activePods[string(podUID)] = nodeName
-				}
-			}
-
-			// Extract migration information if migration is in progress
-			migrationUID := ""
-			migrationTargetPod := ""
-			migrationSourcePod := ""
-			if vmi.Status.MigrationState != nil {
-				migrationUID = string(vmi.Status.MigrationState.MigrationUID)
-				migrationTargetPod = vmi.Status.MigrationState.TargetPod
-				migrationSourcePod = vmi.Status.MigrationState.SourcePod
-			}
-
-			// Found the VMI, populate VMIResource
-			return &VMIResource{
-				Name:               vmi.Name,
-				Namespace:          vmi.Namespace,
-				UID:                string(vmi.UID),
-				DeletionTimestamp:  vmi.DeletionTimestamp,
-				ActivePods:         activePods,
-				MigrationUID:       migrationUID,
-				MigrationTargetPod: migrationTargetPod,
-				MigrationSourcePod: migrationSourcePod,
-			}, nil
-		}
-	}
-
-	// VMI with given UID not found
-	return nil, fmt.Errorf("VMI with UID %s not found in namespace %s", vmiUID, namespace)
-}
-
 // GetVMIResourceByName queries the Kubernetes API for a VirtualMachineInstance with the given name
 // and returns a VMIResource containing its metadata.
+// If the VMI has an ownerReference pointing to a VirtualMachine, the VM resource is also fetched and stored in VMOwner.
 // Returns:
 //   - (*VMIResource, nil) if the VMI is found
 //   - (nil, error) if there was an error querying the API or VMI not found
@@ -277,32 +221,35 @@ func GetVMIResourceByName(ctx context.Context, virtClient VirtClientInterface, n
 		return nil, fmt.Errorf("failed to get VMI %s in namespace %s: %w", vmiName, namespace, err)
 	}
 
-	// Convert ActivePods from map[types.UID]string to map[string]string
-	activePods := make(map[string]string)
-	if vmi.Status.ActivePods != nil {
-		for podUID, nodeName := range vmi.Status.ActivePods {
-			activePods[string(podUID)] = nodeName
+	vmiResource := &VMIResource{
+		Name:      vmi.Name,
+		Namespace: vmi.Namespace,
+		UID:       string(vmi.UID),
+		VMOwner:   nil,
+	}
+
+	// Check if VMI has an ownerReference pointing to a VirtualMachine
+	var vmOwner *metav1.OwnerReference
+	for i := range vmi.OwnerReferences {
+		owner := &vmi.OwnerReferences[i]
+		if owner.APIVersion == VMGroup+"/"+VMVersion &&
+			owner.Kind == "VirtualMachine" {
+			vmOwner = owner
+			break
 		}
 	}
 
-	// Extract migration information if migration is in progress
-	migrationUID := ""
-	migrationTargetPod := ""
-	migrationSourcePod := ""
-	if vmi.Status.MigrationState != nil {
-		migrationUID = string(vmi.Status.MigrationState.MigrationUID)
-		migrationTargetPod = vmi.Status.MigrationState.TargetPod
-		migrationSourcePod = vmi.Status.MigrationState.SourcePod
+	// If VMI is owned by a VM, fetch the VM resource
+	if vmOwner != nil && vmOwner.Name != "" {
+		vm, err := virtClient.VirtualMachine(namespace).Get(ctx, vmOwner.Name, metav1.GetOptions{})
+		if err != nil {
+			// VMI has blockOwnerDeletion: true in its ownerReference to VM, Kubernetes will
+			// block VM deletion until the VMI is deleted. The VMI has finalizers that must be removed
+			// before deletion can proceed.
+			return nil, fmt.Errorf("failed to fetch VM owner object %s/%s: %w", namespace, vmOwner.Name, err)
+		}
+		vmiResource.VMOwner = vm
 	}
 
-	return &VMIResource{
-		Name:               vmi.Name,
-		Namespace:          vmi.Namespace,
-		UID:                string(vmi.UID),
-		DeletionTimestamp:  vmi.DeletionTimestamp,
-		ActivePods:         activePods,
-		MigrationUID:       migrationUID,
-		MigrationTargetPod: migrationTargetPod,
-		MigrationSourcePod: migrationSourcePod,
-	}, nil
+	return vmiResource, nil
 }

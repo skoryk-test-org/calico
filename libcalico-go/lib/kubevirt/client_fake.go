@@ -29,6 +29,7 @@ import (
 type FakeVirtClient struct {
 	mu         sync.RWMutex
 	vmis       map[string]map[string]*kubevirtv1.VirtualMachineInstance          // namespace -> name -> VMI
+	vms        map[string]map[string]*kubevirtv1.VirtualMachine                  // namespace -> name -> VM
 	migrations map[string]map[string]*kubevirtv1.VirtualMachineInstanceMigration // namespace -> name -> VMIM
 }
 
@@ -36,6 +37,7 @@ type FakeVirtClient struct {
 func NewFakeVirtClient() *FakeVirtClient {
 	return &FakeVirtClient{
 		vmis:       make(map[string]map[string]*kubevirtv1.VirtualMachineInstance),
+		vms:        make(map[string]map[string]*kubevirtv1.VirtualMachine),
 		migrations: make(map[string]map[string]*kubevirtv1.VirtualMachineInstanceMigration),
 	}
 }
@@ -43,6 +45,14 @@ func NewFakeVirtClient() *FakeVirtClient {
 // VirtualMachineInstance implements VirtClientInterface.
 func (f *FakeVirtClient) VirtualMachineInstance(namespace string) VMIInterface {
 	return &fakeVMIInterface{
+		client:    f,
+		namespace: namespace,
+	}
+}
+
+// VirtualMachine implements VirtClientInterface.
+func (f *FakeVirtClient) VirtualMachine(namespace string) VMInterface {
+	return &fakeVMInterface{
 		client:    f,
 		namespace: namespace,
 	}
@@ -80,6 +90,22 @@ func (f *FakeVirtClient) DeleteVMI(namespace, name string) {
 // UpdateVMI updates a VMI in the fake client.
 func (f *FakeVirtClient) UpdateVMI(vmi *kubevirtv1.VirtualMachineInstance) {
 	f.AddVMI(vmi) // AddVMI already does deep copy
+}
+
+// AddVM adds a VM to the fake client.
+func (f *FakeVirtClient) AddVM(vm *kubevirtv1.VirtualMachine) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.vms[vm.Namespace] == nil {
+		f.vms[vm.Namespace] = make(map[string]*kubevirtv1.VirtualMachine)
+	}
+	f.vms[vm.Namespace][vm.Name] = vm.DeepCopy()
+}
+
+// UpdateVM updates a VM in the fake client.
+func (f *FakeVirtClient) UpdateVM(vm *kubevirtv1.VirtualMachine) {
+	f.AddVM(vm) // AddVM already does deep copy
 }
 
 // fakeVMIInterface is a fake implementation of VMIInterface.
@@ -122,6 +148,51 @@ func (f *fakeVMIInterface) List(ctx context.Context, options metav1.ListOptions)
 
 	for _, vmi := range nsVMIs {
 		list.Items = append(list.Items, *vmi.DeepCopy())
+	}
+
+	return list, nil
+}
+
+// fakeVMInterface is a fake implementation of VMInterface.
+type fakeVMInterface struct {
+	client    *FakeVirtClient
+	namespace string
+}
+
+// Get implements VMInterface.
+func (f *fakeVMInterface) Get(ctx context.Context, name string, options metav1.GetOptions) (*kubevirtv1.VirtualMachine, error) {
+	f.client.mu.RLock()
+	defer f.client.mu.RUnlock()
+
+	nsVMs, exists := f.client.vms[f.namespace]
+	if !exists {
+		return nil, fmt.Errorf("VirtualMachine %s not found in namespace %s", name, f.namespace)
+	}
+
+	vm, exists := nsVMs[name]
+	if !exists {
+		return nil, fmt.Errorf("VirtualMachine %s not found in namespace %s", name, f.namespace)
+	}
+
+	return vm.DeepCopy(), nil
+}
+
+// List implements VMInterface.
+func (f *fakeVMInterface) List(ctx context.Context, options metav1.ListOptions) (*kubevirtv1.VirtualMachineList, error) {
+	f.client.mu.RLock()
+	defer f.client.mu.RUnlock()
+
+	list := &kubevirtv1.VirtualMachineList{
+		Items: []kubevirtv1.VirtualMachine{},
+	}
+
+	nsVMs, exists := f.client.vms[f.namespace]
+	if !exists {
+		return list, nil
+	}
+
+	for _, vm := range nsVMs {
+		list.Items = append(list.Items, *vm.DeepCopy())
 	}
 
 	return list, nil

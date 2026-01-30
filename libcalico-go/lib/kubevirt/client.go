@@ -56,6 +56,11 @@ func (v *virtClientAdapter) VirtualMachineInstance(namespace string) VMIInterfac
 	return v.client.VirtualMachineInstance(namespace)
 }
 
+// VirtualMachine implements VirtClientInterface.
+func (v *virtClientAdapter) VirtualMachine(namespace string) VMInterface {
+	return v.client.VirtualMachine(namespace)
+}
+
 // VirtualMachineInstanceMigration implements VirtClientInterface.
 func (v *virtClientAdapter) VirtualMachineInstanceMigration(namespace string) VMIMInterface {
 	return v.client.VirtualMachineInstanceMigration(namespace)

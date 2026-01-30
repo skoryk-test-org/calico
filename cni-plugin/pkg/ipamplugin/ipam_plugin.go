@@ -614,7 +614,7 @@ func cmdDel(args *skel.CmdArgs) error {
 			"namespace":             epIDs.Namespace,
 			"vmiName":               vmiInfo.GetName(),
 			"vmiUID":                vmiInfo.GetUID(),
-			"vmiDeletionInProgress": vmiInfo.IsDeletionInProgress(),
+			"vmiDeletionInProgress": vmiInfo.IsVMObjectDeletionInProgress(),
 			"handleID":              handleID,
 		}).Info("Detected KubeVirt virt-launcher pod deletion")
 	} else {
@@ -643,7 +643,7 @@ func cmdDel(args *skel.CmdArgs) error {
 	// For VMI pods, handle deletion based on VMI status
 	if vmiInfo != nil {
 		// Check deletion status from embedded VMIResource
-		if vmiInfo.IsDeletionInProgress() {
+		if vmiInfo.IsVMObjectDeletionInProgress() {
 			// VMI is being deleted - release the IP completely
 			logger.Info("VMI deletion in progress - releasing IP by handle")
 			if err := calicoClient.IPAM().ReleaseByHandle(ctx, handleID); err != nil {

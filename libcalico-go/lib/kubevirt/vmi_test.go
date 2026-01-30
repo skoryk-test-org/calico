@@ -21,6 +21,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
+	kubevirtv1 "kubevirt.io/api/core/v1"
+
 	"github.com/projectcalico/calico/libcalico-go/lib/kubevirt"
 )
 
@@ -165,19 +167,42 @@ func TestGetPodVMIInfo_VMIBeingDeleted(t *testing.T) {
 
 	vmiUID := "vmi-12345"
 	vmiName := "test-vmi"
+	vmUID := "vm-12345"
+	vmName := "test-vm"
 	podUID := "pod-67890"
 	namespace := "default"
 
-	// Create a VMI with deletion timestamp
+	// Create a VM with deletion timestamp
 	now := metav1.Now()
+	vm := &kubevirtv1.VirtualMachine{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              vmName,
+			Namespace:         namespace,
+			UID:               types.UID(vmUID),
+			DeletionTimestamp: &now,
+		},
+	}
+	fakeClient.AddVM(vm)
+
+	// Create a VMI with ownerReference to the VM
+	controllerTrue := true
+	blockOwnerDeletion := true
 	vmi := kubevirt.NewVMIBuilder(vmiName, namespace, vmiUID).
 		WithActivePod(podUID, "node1").
-		WithDeletionTimestamp(now).
 		Build()
+	vmi.OwnerReferences = []metav1.OwnerReference{
+		{
+			APIVersion:         "kubevirt.io/v1",
+			Kind:               "VirtualMachine",
+			Name:               vmName,
+			UID:                types.UID(vmUID),
+			Controller:         &controllerTrue,
+			BlockOwnerDeletion: &blockOwnerDeletion,
+		},
+	}
 	fakeClient.AddVMI(vmi)
 
 	// Create a pod owned by the VMI
-	controllerTrue := true
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "virt-launcher-test-vmi-abcde",
@@ -203,7 +228,7 @@ func TestGetPodVMIInfo_VMIBeingDeleted(t *testing.T) {
 		t.Fatal("Expected PodVMIInfo, got nil")
 	}
 
-	if !info.IsDeletionInProgress() {
-		t.Error("Expected IsDeletionInProgress to be true")
+	if !info.IsVMObjectDeletionInProgress() {
+		t.Error("Expected IsVMObjectDeletionInProgress to be true")
 	}
 }
