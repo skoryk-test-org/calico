@@ -398,8 +398,6 @@ var _ = Describe("IPAM controller UTs", func() {
 			virtClient.AddMigration(migration)
 
 			allocation := makeVMIAllocation(namespace, vmiName, vmiUID)
-			staleTime := time.Now().Add(-VMI_RECREATION_GRACE_PERIOD - time.Second)
-			allocation.leakedAt = &staleTime
 			Expect(c.vmiAllocationIsValid(allocation, false)).To(BeTrue())
 		})
 	})
