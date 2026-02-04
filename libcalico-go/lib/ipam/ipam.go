@@ -2086,13 +2086,14 @@ func (c ipamClient) GetIPAMConfig(ctx context.Context) (*IPAMConfig, error) {
 			}
 
 			// Create the default config because it doesn't already exist.
+			enabled := "Enabled"
 			kvp := &model.KVPair{
 				Key: model.IPAMConfigKey{},
 				Value: &model.IPAMConfig{
 					StrictAffinity:                false,
 					AutoAllocateBlocks:            true,
 					MaxBlocksPerHost:              0,
-					KubeVirtVMAddressPersistence: "Enabled", // Default: enabled for auto-detection
+					KubeVirtVMAddressPersistence: &enabled, // Default: enabled for auto-detection
 				},
 			}
 
@@ -2188,10 +2189,16 @@ func (c ipamClient) convertIPAMConfigToBackend(cfg *IPAMConfig) *model.IPAMConfi
 }
 
 func (c ipamClient) convertBackendToIPAMConfig(cfg *model.IPAMConfig) *IPAMConfig {
+	var persistence *VMAddressPersistence
+	if cfg.KubeVirtVMAddressPersistence != nil {
+		enum := VMAddressPersistence(*cfg.KubeVirtVMAddressPersistence)
+		persistence = &enum
+	}
 	return &IPAMConfig{
-		StrictAffinity:     cfg.StrictAffinity,
-		AutoAllocateBlocks: cfg.AutoAllocateBlocks,
-		MaxBlocksPerHost:   cfg.MaxBlocksPerHost,
+		StrictAffinity:                cfg.StrictAffinity,
+		AutoAllocateBlocks:            cfg.AutoAllocateBlocks,
+		MaxBlocksPerHost:              cfg.MaxBlocksPerHost,
+		KubeVirtVMAddressPersistence: persistence,
 	}
 }
 
