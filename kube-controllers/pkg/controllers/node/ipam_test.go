@@ -352,6 +352,56 @@ var _ = Describe("IPAM controller UTs", func() {
 			allocation.leakedAt = &staleTime
 			Expect(c.vmiAllocationIsValid(allocation, false)).To(BeTrue())
 		})
+
+		It("should keep allocation during migration when VMI is deleting", func() {
+			namespace := "default"
+			vmiName := "test-vmi"
+			vmiUID := "vmi-uid"
+			vmName := "test-vm"
+			vmUID := "vm-uid"
+
+			vm := &kubevirtv1.VirtualMachine{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      vmName,
+					Namespace: namespace,
+					UID:       types.UID(vmUID),
+				},
+			}
+			virtClient.AddVM(vm)
+
+			controllerTrue := true
+			blockOwnerDeletion := true
+			vmi := kubevirt.NewVMIBuilder(vmiName, namespace, vmiUID).
+				WithDeletionTimestamp(metav1.Now()).
+				Build()
+			vmi.OwnerReferences = []metav1.OwnerReference{
+				{
+					APIVersion:         "kubevirt.io/v1",
+					Kind:               "VirtualMachine",
+					Name:               vmName,
+					UID:                types.UID(vmUID),
+					Controller:         &controllerTrue,
+					BlockOwnerDeletion: &blockOwnerDeletion,
+				},
+			}
+			virtClient.AddVMI(vmi)
+
+			migration := &kubevirtv1.VirtualMachineInstanceMigration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-migration",
+					Namespace: namespace,
+				},
+				Spec: kubevirtv1.VirtualMachineInstanceMigrationSpec{
+					VMIName: vmiName,
+				},
+			}
+			virtClient.AddMigration(migration)
+
+			allocation := makeVMIAllocation(namespace, vmiName, vmiUID)
+			staleTime := time.Now().Add(-VMI_RECREATION_GRACE_PERIOD - time.Second)
+			allocation.leakedAt = &staleTime
+			Expect(c.vmiAllocationIsValid(allocation, false)).To(BeTrue())
+		})
 	})
 
 	It("should handle node updates and maintain its node cache", func() {
