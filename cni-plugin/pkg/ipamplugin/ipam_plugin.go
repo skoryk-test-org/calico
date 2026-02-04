@@ -214,6 +214,9 @@ func cmdAdd(args *skel.CmdArgs) error {
 
 			attrs["migration-role"] = "target"
 			attrs["migration-job-uid"] = vmiInfo.GetVMIMigrationUID()
+			attrs[ipam.AttributeVMI] = vmiInfo.GetName()
+			attrs[ipam.AttributeVM] = vmiInfo.VMOwner.Name
+			attrs[ipam.AttributeVMUID] = string(vmiInfo.VMOwner.UID)
 
 			// Handle migration target: retrieve existing IP and set AlternateOwnerAttrs
 			return handleMigrationTarget(calicoClient, handleID, attrs, conf, logger)
