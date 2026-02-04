@@ -22,13 +22,16 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	apiv3 "github.com/projectcalico/api/pkg/apis/projectcalico/v3"
+	"github.com/projectcalico/calico/libcalico-go/lib/kubevirt"
 	"github.com/sirupsen/logrus"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/cache"
+	kubevirtv1 "kubevirt.io/api/core/v1"
 
 	"github.com/projectcalico/calico/kube-controllers/pkg/config"
 	"github.com/projectcalico/calico/kube-controllers/pkg/converter"
@@ -110,6 +113,7 @@ var _ = Describe("IPAM controller UTs", func() {
 	var c *IPAMController
 	var cli client.Interface
 	var cs kubernetes.Interface
+	var virtClient *kubevirt.FakeVirtClient
 	var stopChan chan struct{}
 	var pods chan *v1.Pod
 	var nodes chan *v1.Node
@@ -120,6 +124,8 @@ var _ = Describe("IPAM controller UTs", func() {
 
 		// Create a fake Calico client.
 		cli = NewFakeCalicoClient()
+
+		virtClient = kubevirt.NewFakeVirtClient()
 
 		// Create a node indexer with the fake clientset
 		factory := informers.NewSharedInformerFactory(cs, 0)
@@ -165,7 +171,7 @@ var _ = Describe("IPAM controller UTs", func() {
 
 		// Create a new controller. We don't register with a data feed,
 		// as the tests themselves will drive the controller.
-		c = NewIPAMController(cfg, cli, cs, podInformer.GetIndexer(), nodeInformer.GetIndexer())
+		c = NewIPAMController(cfg, cli, cs, podInformer.GetIndexer(), nodeInformer.GetIndexer(), virtClient)
 
 		// For testing, speed up update batching.
 		c.consolidationWindow = 1 * time.Millisecond
@@ -177,6 +183,128 @@ var _ = Describe("IPAM controller UTs", func() {
 
 		// Stop the controller.
 		close(stopChan)
+	})
+
+	Describe("VMI allocation validation", func() {
+		makeVMIAllocation := func(ns, vmiName, vmiUID string) *allocation {
+			return &allocation{
+				ip:     "10.0.0.1",
+				handle: "vmi-handle",
+				attrs: map[string]string{
+					ipam.AttributeNamespace: ns,
+					ipam.AttributeVMI:       vmiName,
+					"vmiuid":                vmiUID,
+				},
+			}
+		}
+
+		It("should treat matching VMI execution as valid", func() {
+			namespace := "default"
+			vmiName := "test-vmi"
+			vmiUID := "vmi-uid"
+			vmName := "test-vm"
+			vmUID := "vm-uid"
+
+			vm := &kubevirtv1.VirtualMachine{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      vmName,
+					Namespace: namespace,
+					UID:       types.UID(vmUID),
+				},
+			}
+			virtClient.AddVM(vm)
+
+			controllerTrue := true
+			blockOwnerDeletion := true
+			vmi := kubevirt.NewVMIBuilder(vmiName, namespace, vmiUID).Build()
+			vmi.OwnerReferences = []metav1.OwnerReference{
+				{
+					APIVersion:         "kubevirt.io/v1",
+					Kind:               "VirtualMachine",
+					Name:               vmName,
+					UID:                types.UID(vmUID),
+					Controller:         &controllerTrue,
+					BlockOwnerDeletion: &blockOwnerDeletion,
+				},
+			}
+			virtClient.AddVMI(vmi)
+
+			allocation := makeVMIAllocation(namespace, vmiName, vmiUID)
+			Expect(c.vmiAllocationIsValid(allocation, false)).To(BeTrue())
+		})
+
+		It("should treat VM deletion as invalid", func() {
+			namespace := "default"
+			vmiName := "test-vmi"
+			vmiUID := "vmi-uid"
+			vmName := "test-vm"
+			vmUID := "vm-uid"
+
+			now := metav1.Now()
+			vm := &kubevirtv1.VirtualMachine{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:              vmName,
+					Namespace:         namespace,
+					UID:               types.UID(vmUID),
+					DeletionTimestamp: &now,
+				},
+			}
+			virtClient.AddVM(vm)
+
+			controllerTrue := true
+			blockOwnerDeletion := true
+			vmi := kubevirt.NewVMIBuilder(vmiName, namespace, vmiUID).Build()
+			vmi.OwnerReferences = []metav1.OwnerReference{
+				{
+					APIVersion:         "kubevirt.io/v1",
+					Kind:               "VirtualMachine",
+					Name:               vmName,
+					UID:                types.UID(vmUID),
+					Controller:         &controllerTrue,
+					BlockOwnerDeletion: &blockOwnerDeletion,
+				},
+			}
+			virtClient.AddVMI(vmi)
+
+			allocation := makeVMIAllocation(namespace, vmiName, vmiUID)
+			Expect(c.vmiAllocationIsValid(allocation, false)).To(BeFalse())
+		})
+
+		It("should reclaim mismatched VMI executions after grace", func() {
+			namespace := "default"
+			vmiName := "test-vmi"
+			vmName := "test-vm"
+			vmUID := "vm-uid"
+
+			vm := &kubevirtv1.VirtualMachine{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      vmName,
+					Namespace: namespace,
+					UID:       types.UID(vmUID),
+				},
+			}
+			virtClient.AddVM(vm)
+
+			controllerTrue := true
+			blockOwnerDeletion := true
+			vmi := kubevirt.NewVMIBuilder(vmiName, namespace, "current-uid").Build()
+			vmi.OwnerReferences = []metav1.OwnerReference{
+				{
+					APIVersion:         "kubevirt.io/v1",
+					Kind:               "VirtualMachine",
+					Name:               vmName,
+					UID:                types.UID(vmUID),
+					Controller:         &controllerTrue,
+					BlockOwnerDeletion: &blockOwnerDeletion,
+				},
+			}
+			virtClient.AddVMI(vmi)
+
+			allocation := makeVMIAllocation(namespace, vmiName, "stale-uid")
+			staleTime := time.Now().Add(-VMI_RECREATION_GRACE_PERIOD - time.Second)
+			allocation.leakedAt = &staleTime
+			Expect(c.vmiAllocationIsValid(allocation, false)).To(BeFalse())
+		})
 	})
 
 	It("should handle node updates and maintain its node cache", func() {
